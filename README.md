@@ -1,4 +1,13 @@
+# CFRP
 
+VLN + Planner. This repository is the working base for **CFRP-VLN**
+(Counterfactual Recovery Planning for Continuous Vision-and-Language
+Navigation).
+
+The current engineering base is copied from ActiveVLN so that CFRP can reuse
+its multi-turn VLN-CE server / rollout / verl training infrastructure. The
+environment layer is still coupled to Habitat 0.1.7 and will be migrated toward
+Habitat 0.2.4; see `docs/HABITAT_024_MIGRATION.md`.
 
 <div align="center">
   <h1 style="font-size: 32px; font-weight: bold;"> [ICRA 2026] ActiveVLN: Towards Active Exploration via Multi-Turn RL in Vision-and-Language Navigation</h1>

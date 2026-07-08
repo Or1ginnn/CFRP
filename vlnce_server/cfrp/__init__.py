@@ -1,6 +1,7 @@
 """CFRP-VLN protocol and loop helpers."""
 
 from .controller import CFRPController, ControllerStepResult
+from .loop import CFRPLoopTurn, run_scripted_cfrp_loop
 from .protocol import (
     CFRPOutput,
     CFRPProtocolError,
@@ -14,9 +15,11 @@ __all__ = [
     "CFRPController",
     "CFRPOutput",
     "CFRPProtocolError",
+    "CFRPLoopTurn",
     "ControllerStepResult",
     "PlanPoint",
     "PlanState",
     "parse_cfrp_output",
+    "run_scripted_cfrp_loop",
     "validate_output",
 ]

@@ -67,7 +67,7 @@ refactoring before serious experiments.
 See:
 
 ```text
-docs/HABITAT_024_MIGRATION.md
+doc/HABITAT_024_MIGRATION.md
 ```
 
 ## Planned Phases
@@ -85,8 +85,7 @@ Phase 6: evaluation and ablation
 ## Repository Layout
 
 ```text
-doc/                     CFRP method and action-interface notes
-docs/                    engineering notes and migration notes
+doc/                     CFRP method, action-interface, and migration notes
 vlnce_server/            VLN-CE environment server base
 verl/                    training and rollout infrastructure
 examples/vlnce/          VLN training/evaluation entry examples

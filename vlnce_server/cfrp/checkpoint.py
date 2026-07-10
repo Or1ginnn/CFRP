@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Protocol, Sequence
+from typing import Any, Sequence
 
 from .controller import CFRPController
 from .protocol import PlanState
@@ -17,18 +17,6 @@ from .protocol import PlanState
 
 class CFRPCheckpointError(ValueError):
     """Raised when a checkpoint cannot safely be restored."""
-
-
-class AgentStateSimulator(Protocol):
-    def get_agent_state(self, agent_id: int = 0) -> Any: ...
-
-    def set_agent_state(
-        self,
-        position: Any,
-        rotation: Any,
-        agent_id: int = 0,
-        reset_sensors: bool = False,
-    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -53,7 +41,7 @@ class RestoredCFRPState:
 
 
 def capture_cfrp_checkpoint(
-    simulator: AgentStateSimulator,
+    simulator: Any,
     controller: CFRPController,
     *,
     recent_observation_history: Sequence[Any],
@@ -66,7 +54,7 @@ def capture_cfrp_checkpoint(
 
     if turn_index < 0:
         raise CFRPCheckpointError("turn_index must be non-negative")
-    state = simulator.get_agent_state(agent_id)
+    state = _get_agent_state(simulator, agent_id)
     return CFRPCheckpoint(
         agent_position=deepcopy(state.position),
         agent_rotation=deepcopy(state.rotation),
@@ -80,7 +68,7 @@ def capture_cfrp_checkpoint(
 
 
 def restore_cfrp_checkpoint(
-    simulator: AgentStateSimulator,
+    simulator: Any,
     controller: CFRPController,
     checkpoint: CFRPCheckpoint,
     *,
@@ -93,11 +81,11 @@ def restore_cfrp_checkpoint(
         raise CFRPCheckpointError(
             f"checkpoint episode mismatch: expected {checkpoint.episode_id}, got {current_episode_id}"
         )
-    simulator.set_agent_state(
+    _set_agent_state(
+        simulator,
         deepcopy(checkpoint.agent_position),
         deepcopy(checkpoint.agent_rotation),
-        agent_id=agent_id,
-        reset_sensors=False,
+        agent_id,
     )
     controller.current_plan = checkpoint.current_plan
     controller.action_history = list(checkpoint.controller_action_history)
@@ -106,3 +94,33 @@ def restore_cfrp_checkpoint(
         recent_action_history=checkpoint.recent_action_history,
         turn_index=checkpoint.turn_index,
     )
+
+
+def _get_agent_state(simulator: Any, agent_id: int) -> Any:
+    """Support both Habitat-Lab's wrapper and raw habitat_sim.Simulator."""
+
+    get_agent_state = getattr(simulator, "get_agent_state", None)
+    if callable(get_agent_state):
+        return get_agent_state(agent_id)
+    get_agent = getattr(simulator, "get_agent", None)
+    if callable(get_agent):
+        return get_agent(agent_id).get_state()
+    raise CFRPCheckpointError("simulator does not expose an agent state API")
+
+
+def _set_agent_state(simulator: Any, position: Any, rotation: Any, agent_id: int) -> None:
+    """Restore a pose while keeping sensor extrinsics attached to the agent body."""
+
+    set_agent_state = getattr(simulator, "set_agent_state", None)
+    if callable(set_agent_state):
+        set_agent_state(position, rotation, agent_id=agent_id, reset_sensors=False)
+        return
+    get_agent = getattr(simulator, "get_agent", None)
+    if callable(get_agent):
+        agent = get_agent(agent_id)
+        state = agent.get_state()
+        state.position = position
+        state.rotation = rotation
+        agent.set_state(state, reset_sensors=False)
+        return
+    raise CFRPCheckpointError("simulator does not expose an agent restore API")

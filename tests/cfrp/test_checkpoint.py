@@ -31,6 +31,29 @@ class FakeSimulator:
         self.state = FakeAgentState(position=position, rotation=rotation)
 
 
+class FakeRawAgent:
+    def __init__(self, state):
+        self.state = state
+
+    def get_state(self):
+        return self.state
+
+    def set_state(self, state, reset_sensors=False):
+        assert reset_sensors is False
+        self.state = state
+
+
+class FakeRawSimulator:
+    def __init__(self):
+        self.agent = FakeRawAgent(
+            FakeAgentState(position=[1.0, 2.0, 3.0], rotation=[1.0, 0.0, 0.0, 0.0])
+        )
+
+    def get_agent(self, agent_id=0):
+        assert agent_id == 0
+        return self.agent
+
+
 def _controller():
     controller = CFRPController(allowed_actions={"MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP"})
     controller.step(
@@ -91,6 +114,23 @@ def test_checkpoint_rejects_a_different_episode():
         restore_cfrp_checkpoint(
             FakeSimulator(), _controller(), checkpoint, current_episode_id="episode-2"
         )
+
+
+def test_checkpoint_supports_raw_habitat_sim_agent_api():
+    simulator = FakeRawSimulator()
+    controller = _controller()
+    checkpoint = capture_cfrp_checkpoint(
+        simulator,
+        controller,
+        recent_observation_history=(),
+        recent_action_history=(),
+        turn_index=0,
+    )
+    simulator.agent.state.position[0] = 99.0
+
+    restore_cfrp_checkpoint(simulator, controller, checkpoint)
+
+    assert simulator.agent.state.position == [1.0, 2.0, 3.0]
 
 
 def test_checkpoint_requires_non_negative_turn_index():

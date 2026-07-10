@@ -53,7 +53,7 @@ def build_simulator() -> habitat_sim.Simulator:
 
 
 def pose(simulator: habitat_sim.Simulator) -> tuple[np.ndarray, np.ndarray]:
-    state = simulator.get_agent_state()
+    state = simulator.get_agent(0).get_state()
     return np.asarray(state.position).copy(), np_quaternion.as_float_array(state.rotation).copy()
 
 

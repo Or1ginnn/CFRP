@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Show the structure of one same-state continue/replan counterfactual group."""
+"""Show one shared-prefix continue/replan counterfactual group."""
 
 from __future__ import annotations
 
@@ -18,13 +18,41 @@ from vlnce_server.cfrp import (
     CounterfactualGroup,
     CriticalStateBaseline,
     EpisodeReference,
+    make_navigation_pose,
     make_trajectory_prefix,
 )
 
 
+ROTATION = (1.0, 0.0, 0.0, 0.0)
+
+
+def pose(x, z):
+    return make_navigation_pose((x, 0.0, z), ROTATION)
+
+
+def trace(tool, xml, action, subgoal, start_pose, end_pose):
+    recorder = BranchTraceRecorder(
+        forced_tool=tool,
+        first_output_xml=xml,
+        first_output_valid=True,
+        start_pose=start_pose,
+    )
+    recorder.record_step(
+        raw_xml=xml,
+        tool=tool,
+        subgoal=subgoal,
+        action=action,
+        valid=True,
+        pose=end_pose,
+        environment_info={"episode_over": False},
+    )
+    return recorder.finish()
+
+
 def main() -> None:
+    start, critical = pose(0.0, 0.0), pose(1.0, 1.0)
     prefix = make_trajectory_prefix(
-        poses=((0.0, 0.0, 0.0), (1.0, 0.0, 1.0)),
+        poses=(start, critical),
         actions=("MOVE_FORWARD",),
         path_length=1.4,
         collisions=0,
@@ -33,41 +61,45 @@ def main() -> None:
     )
     context = BranchContext(
         checkpoint=CFRPCheckpoint(
-            agent_position=(1.0, 0.0, 1.0),
-            agent_rotation=(1.0, 0.0, 0.0, 0.0),
-            current_plan=None,
-            controller_action_history=("MOVE_FORWARD",),
-            recent_observation_history=("t0",),
-            recent_action_history=("MOVE_FORWARD",),
-            turn_index=1,
-            episode_id="demo-episode",
+            critical.position,
+            critical.rotation,
+            None,
+            ("MOVE_FORWARD",),
+            ("t0",),
+            ("MOVE_FORWARD",),
+            1,
+            0,
+            "demo-episode",
         ),
         episode=EpisodeReference(
-            episode_id="demo-episode",
-            instruction="Reach the kitchen.",
-            goal_description="kitchen",
-            success_distance=3.0,
-            expert_path=((0.0, 0.0, 0.0), (1.0, 0.0, 1.0), (2.0, 0.0, 2.0)),
+            "demo-episode",
+            "scene-1",
+            "Reach the kitchen.",
+            start,
+            "kitchen",
+            ((2.0, 0.0, 2.0),),
+            ("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP"),
+            3.0,
+            "STOP within success_distance",
+            (start, critical, pose(2.0, 2.0)),
         ),
         prefix=prefix,
         baseline=CriticalStateBaseline(5.0, 0.2, 1),
+        normal_prompt="Observation: side room. Choose continue or replan.",
+        critical_step=1,
+        trigger_reason="distance_to_expert exceeded threshold",
     )
-    continue_trace = BranchTraceRecorder(
-        forced_tool="continue",
-        first_output_xml="<tool>continue</tool><action>MOVE_FORWARD</action>",
-        start_pose=prefix.poses[-1],
+    continue_xml = "<tool>continue</tool><subgoal>move ahead</subgoal><action>MOVE_FORWARD</action>"
+    replan_xml = """<plan><global>kitchen</global><local><p id="r1" status="current">return</p></local></plan>
+<tool>replan</tool><subgoal>return</subgoal><action>TURN_LEFT</action>"""
+    group = CounterfactualGroup(
+        context,
+        trace("continue", continue_xml, "MOVE_FORWARD", "move ahead", critical, pose(1.5, 1.5)),
+        trace("replan", replan_xml, "TURN_LEFT", "return", critical, critical),
     )
-    continue_trace.record_step(action="MOVE_FORWARD", pose=(1.5, 0.0, 1.5))
-    replan_trace = BranchTraceRecorder(
-        forced_tool="replan",
-        first_output_xml="<tool>replan</tool><action>TURN_LEFT</action>",
-        start_pose=prefix.poses[-1],
-    )
-    replan_trace.record_step(action="TURN_LEFT", pose=(1.0, 0.0, 1.0))
-    group = CounterfactualGroup(context, continue_trace.finish(), replan_trace.finish())
-    print(f"episode={group.context.episode.episode_id} prefix_actions={group.context.prefix.actions}")
-    print(f"continue_actions={group.continue_trace.actions}")
-    print(f"replan_actions={group.replan_trace.actions}")
+    print(f"episode={group.context.episode.episode_id} shared_prefix={group.context.prefix.actions}")
+    print(f"normal_prompt_saved={bool(group.context.normal_prompt)} cooldown={group.context.checkpoint.cooldown_steps}")
+    print(f"continue={group.continue_trace.actions} replan={group.replan_trace.actions}")
     print("cfrp_branch_context: OK")
 
 

@@ -73,6 +73,7 @@ def main() -> int:
             recent_observation_history=["t0"],
             recent_action_history=controller.action_history,
             turn_index=1,
+            cooldown_steps=2,
             episode_id="habitat-test-scene",
         )
 
@@ -80,9 +81,11 @@ def main() -> int:
         move_observation = simulator.step(move_command.habitat_action)
         move_pose = pose(simulator)
 
-        restore_cfrp_checkpoint(
+        restored = restore_cfrp_checkpoint(
             simulator, controller, checkpoint, current_episode_id="habitat-test-scene"
         )
+        if restored.cooldown_steps != 2:
+            raise RuntimeError("checkpoint did not restore CFRP cooldown state")
         turn_command = adapter.for_simulator("TURN_LEFT")
         simulator.step(turn_command.habitat_action)
         turn_pose = pose(simulator)
@@ -101,6 +104,7 @@ def main() -> int:
 
         print("branch_a=MOVE_FORWARD branch_b=TURN_LEFT diverged=OK")
         print("restore_then_replay=MOVE_FORWARD observation_match=OK pose_match=OK")
+        print("control_memory_restore=cooldown_match=OK")
         print("cfrp_checkpoint_smoke: OK")
         return 0
     finally:

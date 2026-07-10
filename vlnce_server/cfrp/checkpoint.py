@@ -30,6 +30,7 @@ class CFRPCheckpoint:
     recent_observation_history: tuple[Any, ...]
     recent_action_history: tuple[str, ...]
     turn_index: int
+    cooldown_steps: int = 0
     episode_id: str | None = None
 
 
@@ -38,6 +39,7 @@ class RestoredCFRPState:
     recent_observation_history: tuple[Any, ...]
     recent_action_history: tuple[str, ...]
     turn_index: int
+    cooldown_steps: int
 
 
 def capture_cfrp_checkpoint(
@@ -47,13 +49,14 @@ def capture_cfrp_checkpoint(
     recent_observation_history: Sequence[Any],
     recent_action_history: Sequence[str],
     turn_index: int,
+    cooldown_steps: int = 0,
     episode_id: str | None = None,
     agent_id: int = 0,
 ) -> CFRPCheckpoint:
     """Capture pose plus the CFRP control memory required by a branch rollout."""
 
-    if turn_index < 0:
-        raise CFRPCheckpointError("turn_index must be non-negative")
+    if turn_index < 0 or cooldown_steps < 0:
+        raise CFRPCheckpointError("turn_index and cooldown_steps must be non-negative")
     state = _get_agent_state(simulator, agent_id)
     return CFRPCheckpoint(
         agent_position=deepcopy(state.position),
@@ -63,6 +66,7 @@ def capture_cfrp_checkpoint(
         recent_observation_history=tuple(deepcopy(recent_observation_history)),
         recent_action_history=tuple(recent_action_history),
         turn_index=turn_index,
+        cooldown_steps=cooldown_steps,
         episode_id=episode_id,
     )
 
@@ -93,6 +97,7 @@ def restore_cfrp_checkpoint(
         recent_observation_history=tuple(deepcopy(checkpoint.recent_observation_history)),
         recent_action_history=checkpoint.recent_action_history,
         turn_index=checkpoint.turn_index,
+        cooldown_steps=checkpoint.cooldown_steps,
     )
 
 

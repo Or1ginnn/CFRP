@@ -79,6 +79,7 @@ def test_checkpoint_restores_pose_and_cfrp_control_memory():
         recent_observation_history=observations,
         recent_action_history=["MOVE_FORWARD"],
         turn_index=3,
+        cooldown_steps=2,
         episode_id="episode-1",
     )
 
@@ -98,6 +99,7 @@ def test_checkpoint_restores_pose_and_cfrp_control_memory():
     assert restored.recent_observation_history == ({"frame": [1]},)
     assert restored.recent_action_history == ("MOVE_FORWARD",)
     assert restored.turn_index == 3
+    assert restored.cooldown_steps == 2
 
 
 def test_checkpoint_rejects_a_different_episode():

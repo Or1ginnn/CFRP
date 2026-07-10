@@ -1,74 +1,120 @@
-"""Structured data for CFRP counterfactual branch collection.
-
-The simulator checkpoint restores a physical branch point. This module records
-the shared episode/prefix context and the two branch-local suffixes used later
-for scoring and group-relative optimization.
-"""
+"""Structured records for CFRP counterfactual branch collection."""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from .checkpoint import CFRPCheckpoint
+from .protocol import CFRPProtocolError, parse_cfrp_output
 
 
-Pose = tuple[float, ...]
+Vector = tuple[float, ...]
 BranchTool = Literal["continue", "replan"]
+InfoScalar = str | int | float | bool | None
 
 
 class CFRPBranchingError(ValueError):
     """Raised when counterfactual branch data is inconsistent."""
 
 
-def _pose(values: Sequence[float]) -> Pose:
-    pose = tuple(float(value) for value in values)
-    if not pose:
-        raise CFRPBranchingError("pose must not be empty")
-    return pose
+def _vector(values: Sequence[float], name: str) -> Vector:
+    vector = tuple(float(value) for value in values)
+    if not vector:
+        raise CFRPBranchingError(f"{name} must not be empty")
+    return vector
+
+
+@dataclass(frozen=True)
+class NavigationPose:
+    """Agent body pose used to define an embodied branch state."""
+
+    position: Vector
+    rotation: Vector
+
+    def __post_init__(self) -> None:
+        if not self.position or not self.rotation:
+            raise CFRPBranchingError("navigation pose requires position and rotation")
+
+
+def make_navigation_pose(
+    position: Sequence[float], rotation: Sequence[float]
+) -> NavigationPose:
+    return NavigationPose(
+        position=_vector(position, "position"),
+        rotation=_vector(rotation, "rotation"),
+    )
 
 
 @dataclass(frozen=True)
 class EpisodeReference:
-    """Immutable task metadata shared by every branch of an episode."""
+    """Privileged immutable task metadata shared by both training branches."""
 
     episode_id: str
+    scene_id: str
     instruction: str
+    start_pose: NavigationPose
     goal_description: str
+    goal_positions: tuple[Vector, ...]
+    allowed_actions: tuple[str, ...]
     success_distance: float
-    expert_path: tuple[Pose, ...]
+    success_condition: str
+    expert_path: tuple[NavigationPose, ...]
 
     def __post_init__(self) -> None:
-        if not self.episode_id or not self.instruction or not self.goal_description:
+        required = (
+            self.episode_id,
+            self.scene_id,
+            self.instruction,
+            self.goal_description,
+            self.success_condition,
+        )
+        if not all(required):
             raise CFRPBranchingError("episode reference fields must not be empty")
         if self.success_distance <= 0:
             raise CFRPBranchingError("success_distance must be positive")
-        if not self.expert_path:
-            raise CFRPBranchingError("expert_path must not be empty")
+        if not self.goal_positions or not self.allowed_actions or not self.expert_path:
+            raise CFRPBranchingError(
+                "goal_positions, allowed_actions, and expert_path must not be empty"
+            )
 
 
 @dataclass(frozen=True)
 class MetricSnapshot:
-    """Numeric Habitat task metrics captured at one navigation state."""
+    """Numeric Habitat metrics captured at one navigation state."""
 
     values: tuple[tuple[str, float], ...]
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, float]) -> "MetricSnapshot":
-        return cls(tuple(sorted((str(name), float(value)) for name, value in values.items())))
+        return cls(
+            tuple(sorted((str(name), float(value)) for name, value in values.items()))
+        )
 
     def get(self, name: str) -> float | None:
-        for metric_name, value in self.values:
-            if metric_name == name:
-                return value
-        return None
+        return next((value for metric_name, value in self.values if metric_name == name), None)
+
+
+@dataclass(frozen=True)
+class EnvironmentInfo:
+    """Small scalar environment fields retained for debugging and scoring."""
+
+    values: tuple[tuple[str, InfoScalar], ...]
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, InfoScalar]) -> "EnvironmentInfo":
+        return cls(tuple(sorted((str(name), deepcopy(value)) for name, value in values.items())))
+
+    def get(self, name: str) -> InfoScalar:
+        return next((value for info_name, value in self.values if info_name == name), None)
 
 
 @dataclass(frozen=True)
 class TrajectoryPrefix:
-    """The fixed trajectory before a counterfactual critical state."""
+    """One immutable lightweight pose/action history shared by both branches."""
 
-    poses: tuple[Pose, ...]
+    poses: tuple[NavigationPose, ...]
     actions: tuple[str, ...]
     path_length: float
     collisions: int
@@ -86,8 +132,6 @@ class TrajectoryPrefix:
 
 @dataclass(frozen=True)
 class CriticalStateBaseline:
-    """Reference values used to measure local recovery after branching."""
-
     distance_to_goal: float
     distance_to_expert: float
     expert_progress_index: int
@@ -101,40 +145,62 @@ class CriticalStateBaseline:
 
 @dataclass(frozen=True)
 class BranchContext:
-    """All data shared by forced continue and forced replan rollouts."""
+    """Shared normal-prompt state for forced continue and replan rollouts."""
 
     checkpoint: CFRPCheckpoint
     episode: EpisodeReference
     prefix: TrajectoryPrefix
     baseline: CriticalStateBaseline
+    normal_prompt: str
+    critical_step: int
+    trigger_reason: str
 
     def __post_init__(self) -> None:
-        if self.checkpoint.episode_id is not None and self.checkpoint.episode_id != self.episode.episode_id:
-            raise CFRPBranchingError("checkpoint and episode reference must have the same episode_id")
+        if self.checkpoint.episode_id not in {None, self.episode.episode_id}:
+            raise CFRPBranchingError(
+                "checkpoint and episode reference must have the same episode_id"
+            )
+        if not self.normal_prompt.strip() or not self.trigger_reason.strip():
+            raise CFRPBranchingError("normal_prompt and trigger_reason must not be empty")
+        if self.critical_step < 0:
+            raise CFRPBranchingError("critical_step must be non-negative")
         if self.baseline.expert_progress_index >= len(self.episode.expert_path):
             raise CFRPBranchingError("expert_progress_index exceeds expert_path")
+        if self.prefix.poses[-1].position != tuple(self.checkpoint.agent_position):
+            raise CFRPBranchingError("prefix endpoint must match checkpoint position")
 
 
 @dataclass(frozen=True)
 class BranchStep:
-    """One action and its resulting pose in a branch-local suffix."""
+    """One parsed XML decision and its resulting environment state."""
 
+    raw_xml: str
+    tool: str
+    subgoal: str
     action: str
-    pose: Pose
+    valid: bool
+    pose: NavigationPose
     collided: bool = False
+    metrics: MetricSnapshot = field(default_factory=lambda: MetricSnapshot(()))
+    environment_info: EnvironmentInfo = field(
+        default_factory=lambda: EnvironmentInfo(())
+    )
 
     def __post_init__(self) -> None:
-        if not self.action:
-            raise CFRPBranchingError("branch action must not be empty")
+        if not self.raw_xml.strip() or not self.action:
+            raise CFRPBranchingError("branch raw_xml and action must not be empty")
+        if self.valid and (self.tool not in {"continue", "replan"} or not self.subgoal):
+            raise CFRPBranchingError("valid branch step requires tool and subgoal")
 
 
 @dataclass(frozen=True)
 class BranchTrace:
-    """The suffix generated after a forced tool decision at a critical state."""
+    """The suffix after one forced tool intervention at a critical state."""
 
     forced_tool: BranchTool
     first_output_xml: str
-    start_pose: Pose
+    first_output_valid: bool
+    start_pose: NavigationPose
     steps: tuple[BranchStep, ...]
     terminal_reason: str | None = None
     final_metrics: MetricSnapshot = field(default_factory=lambda: MetricSnapshot(()))
@@ -144,11 +210,21 @@ class BranchTrace:
             raise CFRPBranchingError(f"invalid forced tool: {self.forced_tool}")
         if not self.first_output_xml.strip():
             raise CFRPBranchingError("branch first_output_xml must not be empty")
-        if not self.steps:
-            raise CFRPBranchingError("branch trace must contain at least one step")
+        if self.first_output_valid:
+            try:
+                parsed = parse_cfrp_output(self.first_output_xml)
+            except CFRPProtocolError as exc:
+                raise CFRPBranchingError(f"valid first output is not parseable: {exc}") from exc
+            if parsed.tool != self.forced_tool:
+                raise CFRPBranchingError("first output tool does not match forced tool")
+            if not self.steps:
+                raise CFRPBranchingError("valid branch trace must contain at least one step")
+            first_step = self.steps[0]
+            if first_step.tool != parsed.tool or first_step.action != parsed.action:
+                raise CFRPBranchingError("first branch step does not match first_output_xml")
 
     @property
-    def poses(self) -> tuple[Pose, ...]:
+    def poses(self) -> tuple[NavigationPose, ...]:
         return (self.start_pose,) + tuple(step.pose for step in self.steps)
 
     @property
@@ -161,16 +237,46 @@ class BranchTrace:
 
 
 class BranchTraceRecorder:
-    """Mutable collector that produces one validated immutable branch trace."""
-
-    def __init__(self, *, forced_tool: BranchTool, first_output_xml: str, start_pose: Sequence[float]) -> None:
+    def __init__(
+        self,
+        *,
+        forced_tool: BranchTool,
+        first_output_xml: str,
+        first_output_valid: bool,
+        start_pose: NavigationPose,
+    ) -> None:
         self._forced_tool = forced_tool
         self._first_output_xml = first_output_xml
-        self._start_pose = _pose(start_pose)
+        self._first_output_valid = first_output_valid
+        self._start_pose = start_pose
         self._steps: list[BranchStep] = []
 
-    def record_step(self, *, action: str, pose: Sequence[float], collided: bool = False) -> None:
-        self._steps.append(BranchStep(action=action, pose=_pose(pose), collided=collided))
+    def record_step(
+        self,
+        *,
+        raw_xml: str,
+        tool: str,
+        subgoal: str,
+        action: str,
+        valid: bool,
+        pose: NavigationPose,
+        collided: bool = False,
+        metrics: Mapping[str, float] | None = None,
+        environment_info: Mapping[str, InfoScalar] | None = None,
+    ) -> None:
+        self._steps.append(
+            BranchStep(
+                raw_xml=raw_xml,
+                tool=tool,
+                subgoal=subgoal,
+                action=action,
+                valid=valid,
+                pose=pose,
+                collided=collided,
+                metrics=MetricSnapshot.from_mapping(metrics or {}),
+                environment_info=EnvironmentInfo.from_mapping(environment_info or {}),
+            )
+        )
 
     def finish(
         self,
@@ -181,6 +287,7 @@ class BranchTraceRecorder:
         return BranchTrace(
             forced_tool=self._forced_tool,
             first_output_xml=self._first_output_xml,
+            first_output_valid=self._first_output_valid,
             start_pose=self._start_pose,
             steps=tuple(self._steps),
             terminal_reason=terminal_reason,
@@ -190,8 +297,6 @@ class BranchTraceRecorder:
 
 @dataclass(frozen=True)
 class CounterfactualGroup:
-    """A same-context pair ready for later reward comparison."""
-
     context: BranchContext
     continue_trace: BranchTrace
     replan_trace: BranchTrace
@@ -201,28 +306,22 @@ class CounterfactualGroup:
             raise CFRPBranchingError("continue_trace must force continue")
         if self.replan_trace.forced_tool != "replan":
             raise CFRPBranchingError("replan_trace must force replan")
-        expected_pose = self.prefix_end_pose
-        if self.continue_trace.start_pose != expected_pose or self.replan_trace.start_pose != expected_pose:
+        expected = self.context.prefix.poses[-1]
+        if self.continue_trace.start_pose != expected or self.replan_trace.start_pose != expected:
             raise CFRPBranchingError("both branch traces must start at the prefix endpoint")
-
-    @property
-    def prefix_end_pose(self) -> Pose:
-        return self.context.prefix.poses[-1]
 
 
 def make_trajectory_prefix(
     *,
-    poses: Iterable[Sequence[float]],
+    poses: Iterable[NavigationPose],
     actions: Iterable[str],
     path_length: float,
     collisions: int,
     elapsed_steps: int,
     metrics: Mapping[str, float],
 ) -> TrajectoryPrefix:
-    """Normalize recorded navigation data into an immutable prefix."""
-
     return TrajectoryPrefix(
-        poses=tuple(_pose(pose) for pose in poses),
+        poses=tuple(poses),
         actions=tuple(actions),
         path_length=float(path_length),
         collisions=int(collisions),

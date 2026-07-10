@@ -65,7 +65,7 @@ MODEL_OUTPUTS = (
 <action>MOVE_FORWARD</action>
 """,
     """
-<tool>stop</tool>
+<tool>continue</tool>
 <subgoal>stop near the kitchen sink</subgoal>
 <action>STOP</action>
 """,

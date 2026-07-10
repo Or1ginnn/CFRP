@@ -7,6 +7,8 @@ from .protocol import (
     CFRPProtocolError,
     PlanPoint,
     PlanState,
+    PlanUpdate,
+    apply_plan_update,
     parse_cfrp_output,
     validate_output,
 )
@@ -19,6 +21,8 @@ __all__ = [
     "ControllerStepResult",
     "PlanPoint",
     "PlanState",
+    "PlanUpdate",
+    "apply_plan_update",
     "parse_cfrp_output",
     "run_scripted_cfrp_loop",
     "validate_output",

@@ -12,7 +12,7 @@ from html import escape
 import xml.etree.ElementTree as ET
 
 
-VALID_TOOLS = {"continue", "replan", "stop"}
+VALID_TOOLS = {"continue", "replan"}
 VALID_PLAN_STATUSES = {"done", "current", "todo", "abandoned"}
 
 
@@ -50,11 +50,21 @@ class PlanState:
 
 
 @dataclass(frozen=True)
+class PlanUpdate:
+    """Compact replan patch applied by the controller to a plan state."""
+
+    abandon_id: str
+    current: str
+    future: str
+
+
+@dataclass(frozen=True)
 class CFRPOutput:
     tool: str
     subgoal: str
     action: str
     plan: PlanState | None = None
+    plan_update: PlanUpdate | None = None
     raw_xml: str = ""
 
 
@@ -77,8 +87,14 @@ def parse_cfrp_output(text: str) -> CFRPOutput:
     plan_nodes = root.findall("plan")
     if len(plan_nodes) > 1:
         raise CFRPProtocolError("output contains multiple <plan> fields")
+    plan_update_nodes = root.findall("plan_update")
+    if len(plan_update_nodes) > 1:
+        raise CFRPProtocolError("output contains multiple <plan_update> fields")
+    if plan_nodes and plan_update_nodes:
+        raise CFRPProtocolError("output cannot contain both <plan> and <plan_update>")
 
     plan = _parse_plan(plan_nodes[0]) if plan_nodes else None
+    plan_update = _parse_plan_update(plan_update_nodes[0]) if plan_update_nodes else None
     tool = _required_text(root, "tool")
     subgoal = _required_text(root, "subgoal")
     action = _required_text(root, "action")
@@ -88,6 +104,7 @@ def parse_cfrp_output(text: str) -> CFRPOutput:
         subgoal=subgoal,
         action=action,
         plan=plan,
+        plan_update=plan_update,
         raw_xml=raw_text,
     )
 
@@ -115,21 +132,23 @@ def validate_output(
         raise CFRPProtocolError("missing subgoal")
 
     if output.tool == "continue":
+        if output.plan_update is not None:
+            raise CFRPProtocolError("continue must not output <plan_update>")
         if output.plan is not None:
             if previous_plan is not None:
                 raise CFRPProtocolError("continue must not output <plan> after initialization")
             validate_plan(output.plan)
     elif output.tool == "replan":
-        if output.plan is None:
-            raise CFRPProtocolError("replan must output <plan>")
-        validate_plan(output.plan)
-        if previous_plan is not None:
-            validate_done_points_immutable(previous_plan, output.plan)
-    elif output.tool == "stop":
-        if output.action != "STOP":
-            raise CFRPProtocolError("stop must use action STOP")
+        if output.plan is None and output.plan_update is None:
+            raise CFRPProtocolError("replan must output <plan> or <plan_update>")
         if output.plan is not None:
-            raise CFRPProtocolError("stop must not output <plan>")
+            validate_plan(output.plan)
+        if output.plan is not None and previous_plan is not None:
+            validate_done_points_immutable(previous_plan, output.plan)
+        if output.plan_update is not None:
+            if previous_plan is None:
+                raise CFRPProtocolError("replan <plan_update> requires an existing plan")
+            validate_plan_update(previous_plan, output.plan_update)
 
 
 def validate_plan(plan: PlanState) -> None:
@@ -169,6 +188,41 @@ def validate_done_points_immutable(previous_plan: PlanState, new_plan: PlanState
             raise CFRPProtocolError(f"done point text changed during replan: {point_id}")
 
 
+def validate_plan_update(previous_plan: PlanState, update: PlanUpdate) -> None:
+    point_by_id = {point.id: point for point in previous_plan.points}
+    target = point_by_id.get(update.abandon_id)
+    if target is None:
+        raise CFRPProtocolError(f"plan update references unknown point: {update.abandon_id}")
+    if target.status != "current":
+        raise CFRPProtocolError("plan update must abandon the current point")
+    if not update.current or not update.future:
+        raise CFRPProtocolError("plan update fields must not be empty")
+
+
+def apply_plan_update(previous_plan: PlanState, update: PlanUpdate) -> PlanState:
+    """Apply a compact recovery patch without changing completed plan points."""
+
+    validate_plan_update(previous_plan, update)
+    existing_ids = {point.id for point in previous_plan.points}
+    recovery_id = _next_generated_id("r", existing_ids)
+    future_id = _next_generated_id("f", existing_ids | {recovery_id})
+    updated_points = tuple(
+        PlanPoint(
+            id=point.id,
+            status="abandoned" if point.id == update.abandon_id else point.status,
+            text=point.text,
+        )
+        for point in previous_plan.points
+    ) + (
+        PlanPoint(id=recovery_id, status="current", text=update.current),
+        PlanPoint(id=future_id, status="todo", text=update.future),
+    )
+    new_plan = PlanState(global_goal=previous_plan.global_goal, points=updated_points)
+    validate_plan(new_plan)
+    validate_done_points_immutable(previous_plan, new_plan)
+    return new_plan
+
+
 def _parse_plan(plan_node: ET.Element) -> PlanState:
     global_goal = _required_text(plan_node, "global")
     local_node = plan_node.find("local")
@@ -188,6 +242,21 @@ def _parse_plan(plan_node: ET.Element) -> PlanState:
     plan = PlanState(global_goal=global_goal, points=tuple(points))
     validate_plan(plan)
     return plan
+
+
+def _parse_plan_update(update_node: ET.Element) -> PlanUpdate:
+    return PlanUpdate(
+        abandon_id=_required_text(update_node, "abandon"),
+        current=_required_text(update_node, "current"),
+        future=_required_text(update_node, "future"),
+    )
+
+
+def _next_generated_id(prefix: str, existing_ids: set[str]) -> str:
+    index = 1
+    while f"{prefix}{index}" in existing_ids:
+        index += 1
+    return f"{prefix}{index}"
 
 
 def _required_text(root: ET.Element, tag: str) -> str:

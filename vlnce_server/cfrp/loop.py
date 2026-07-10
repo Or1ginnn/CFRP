@@ -67,7 +67,7 @@ def run_scripted_cfrp_loop(
         raw_output = model_outputs[turn_index]
         result = controller.step(parse_cfrp_output(raw_output))
         current_plan_xml = result.current_plan.to_xml() if result.current_plan else None
-        is_stop = result.tool == "stop"
+        is_stop = result.action == "STOP"
 
         turns.append(
             CFRPLoopTurn(

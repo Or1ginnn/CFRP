@@ -45,7 +45,7 @@ def test_scripted_loop_runs_until_stop():
         <action>TURN_LEFT</action>
         """,
         """
-        <tool>stop</tool>
+        <tool>continue</tool>
         <subgoal>stop near target</subgoal>
         <action>STOP</action>
         """,
@@ -58,7 +58,7 @@ def test_scripted_loop_runs_until_stop():
         allowed_actions=ALLOWED_ACTIONS,
     )
 
-    assert [turn.tool for turn in turns] == ["continue", "continue", "replan", "stop"]
+    assert [turn.tool for turn in turns] == ["continue", "continue", "replan", "continue"]
     assert [turn.action for turn in turns] == ["MOVE_FORWARD", "MOVE_FORWARD", "TURN_LEFT", "STOP"]
     assert turns[-1].is_stop is True
     assert turns[1].prompt.count("<plan>") == 1

@@ -30,7 +30,8 @@ observations. It does not import Habitat, torch, transformers, or Qwen.
 
 - `scripts/run_cfrp_mock_loop.py`
   - Runs a deterministic five-turn mock trajectory.
-  - Covers initialization, continue, recovery replan, and stop.
+  - Covers initialization, continue, recovery replan, and the `STOP` primitive
+    action under the `continue` tool.
 
 ## ActiveVLN Service Path
 

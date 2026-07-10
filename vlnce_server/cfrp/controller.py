@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .protocol import CFRPOutput, CFRPProtocolError, PlanState, validate_output
+from .protocol import CFRPOutput, CFRPProtocolError, PlanState, apply_plan_update, validate_output
 
 
 @dataclass(frozen=True)
@@ -34,9 +34,12 @@ class CFRPController:
             elif self.current_plan is None:
                 raise CFRPProtocolError("continue requires an existing current plan")
         elif output.tool == "replan":
-            self.current_plan = output.plan
-        elif output.tool == "stop":
-            pass
+            if output.plan is not None:
+                self.current_plan = output.plan
+            else:
+                assert self.current_plan is not None
+                assert output.plan_update is not None
+                self.current_plan = apply_plan_update(self.current_plan, output.plan_update)
         else:
             raise CFRPProtocolError(f"invalid tool: {output.tool}")
 

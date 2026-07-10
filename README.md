@@ -4,8 +4,8 @@
 
 This repository is a working codebase for exploring recovery-oriented planning in
 continuous VLN. The main idea is to maintain a sparse persistent plan state and
-train a VLM agent to decide when to continue, replan, recover from a wrong route,
-or stop.
+train a VLM agent to decide when to continue its current plan or replan after
+recovering from a wrong route.
 
 ## Project Goal
 
@@ -14,20 +14,21 @@ intended route. Instead of blindly following the old plan, the agent should
 produce structured XML:
 
 ```xml
-<plan>...</plan>   <!-- only when initializing or replanning -->
-<tool>continue / replan / stop</tool>
+<plan>...</plan>   <!-- only when initializing or full replanning -->
+<tool>continue / replan</tool>
 <subgoal>short executable local instruction</subgoal>
 <action>one allowed action</action>
 ```
+
+`STOP` is a primitive action, not a tool. A compact `<plan_update>` may replace
+the full `<plan>` during replanning.
 
 The long-term training target is counterfactual branch comparison from the same
 critical state:
 
 ```text
 continue
-direct_replan
-recovery_replan
-stop
+replan
 ```
 
 Each branch is rolled out in the environment and ranked by navigation outcome.
@@ -42,8 +43,9 @@ This repository currently contains:
 - verl-based training infrastructure under `verl/`
 - migration notes for moving the environment layer from Habitat 0.1.7 to 0.2.4
 
-The CFRP-specific parser, controller, prompt builder, and branch rollout modules
-are still under development.
+The CFRP-specific protocol, parser, controller, prompt builder, and mock loop
+are implemented and covered by lightweight tests. Habitat integration and branch
+rollout remain under development.
 
 ## Engineering Base
 

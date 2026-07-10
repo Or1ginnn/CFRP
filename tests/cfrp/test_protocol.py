@@ -45,10 +45,22 @@ RECOVERY_XML = """
 """
 
 
-STOP_XML = """
-<tool>stop</tool>
+STOP_ACTION_XML = """
+<tool>continue</tool>
 <subgoal>stop near the target location</subgoal>
 <action>STOP</action>
+"""
+
+
+PLAN_UPDATE_XML = """
+<tool>replan</tool>
+<plan_update>
+  <abandon>p1</abandon>
+  <current>return to the hallway entrance</current>
+  <future>continue through the hallway toward the sink</future>
+</plan_update>
+<subgoal>leave the side room and return to the hallway</subgoal>
+<action>TURN_LEFT</action>
 """
 
 
@@ -84,12 +96,20 @@ def test_replan_updates_plan_after_initialization():
     assert output.plan.current_points()[0].id == "r1"
 
 
-def test_stop_requires_stop_action():
-    output = parse_cfrp_output(STOP_XML)
+def test_stop_is_a_continue_action_not_a_tool():
+    output = parse_cfrp_output(STOP_ACTION_XML)
 
     validate_output(output, ALLOWED_ACTIONS)
 
+    assert output.tool == "continue"
     assert output.action == "STOP"
+
+
+def test_stop_tool_is_rejected():
+    output = parse_cfrp_output(STOP_ACTION_XML.replace("continue", "stop", 1))
+
+    with pytest.raises(CFRPProtocolError, match="invalid tool"):
+        validate_output(output, ALLOWED_ACTIONS)
 
 
 def test_invalid_action_is_rejected():
@@ -116,6 +136,26 @@ def test_replan_requires_plan():
 
     with pytest.raises(CFRPProtocolError, match="replan must output"):
         validate_output(output, ALLOWED_ACTIONS)
+
+
+def test_controller_applies_compact_plan_update():
+    controller = CFRPController(allowed_actions=ALLOWED_ACTIONS)
+    controller.step(parse_cfrp_output(INIT_XML))
+
+    result = controller.step(parse_cfrp_output(PLAN_UPDATE_XML))
+
+    assert result.current_plan is not None
+    assert result.current_plan.current_points()[0].text == "return to the hallway entrance"
+    assert next(point for point in result.current_plan.points if point.id == "p1").status == "abandoned"
+
+
+def test_plan_update_requires_the_current_point():
+    initial = parse_cfrp_output(INIT_XML).plan
+    assert initial is not None
+    output = parse_cfrp_output(PLAN_UPDATE_XML.replace("<abandon>p1</abandon>", "<abandon>p2</abandon>"))
+
+    with pytest.raises(CFRPProtocolError, match="current point"):
+        validate_output(output, ALLOWED_ACTIONS, previous_plan=initial)
 
 
 def test_continue_rejects_plan_after_initialization():

@@ -1,5 +1,11 @@
 # CFRP Loop Integration Notes
 
+> **Legacy note.** This document describes the old tool-first mock loop. The
+> active Stage 1 protocol is `progress/subgoal/action` with no tool or plan
+> update. See `doc/2stage_action.md` and
+> `doc/PHASE_0_2_BASELINE_MIGRATION_AUDIT.md`. The Stage 2 tool path remains a
+> compatibility reference only.
+
 This note records the Phase 1 integration target. It intentionally avoids
 Habitat 0.2.4 migration work.
 

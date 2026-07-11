@@ -1,5 +1,10 @@
 # Habitat 0.2.4 Migration Notes
 
+> **Legacy note.** The active target is Habitat 0.3, not Habitat 0.2.4. The
+> authoritative migration boundary and current phase definitions are in
+> `doc/PHASE_0_2_BASELINE_MIGRATION_AUDIT.md` and `doc/2stage_action.md`.
+> This file is retained only as history for the original ActiveVLN audit.
+
 This project uses ActiveVLN as the initial engineering base, but the copied
 upstream code targets Habitat 0.1.7. CFRP-VLN should target the more common
 Habitat / Habitat-Lab 0.2.4 stack, so the environment layer must be treated as

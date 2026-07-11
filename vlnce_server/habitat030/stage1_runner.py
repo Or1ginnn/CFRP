@@ -123,10 +123,50 @@ class Stage1EpisodeRunner:
         self.trajectory.append(trajectory_step)
         return trajectory_step
 
+    def model_request(self):
+        """Return the current oracle-free state to a Stage 1 model policy."""
+
+        if self.initial_observation is None:
+            self.reset()
+        current_plan = self.controller.current_plan
+        if current_plan is None:
+            raise RuntimeError("Stage 1 runner has no controller-owned plan")
+
+        from vlnce_server.qwen3vl import Stage1ModelRequest
+
+        latest_observation = self.history.visual_history[-1]
+        return Stage1ModelRequest(
+            instruction=latest_observation.instruction,
+            current_plan=current_plan,
+            visual_history=tuple(observation.rgb for observation in self.history.visual_history),
+            action_history=self.history.action_history,
+            allowed_actions=tuple(getattr(self.env_wrapper, "allowed_actions", ())),
+        )
+
+    def step_with_policy(self, policy: object, turn_index: Optional[int] = None) -> Stage1TrajectoryStep:
+        """Generate one decision, then reuse the normal XML/controller/action path."""
+
+        generate_xml = getattr(policy, "generate_xml", None)
+        if not callable(generate_xml):
+            raise TypeError("Stage 1 policy must provide generate_xml(request)")
+        return self.step(generate_xml(self.model_request()), turn_index=turn_index)
+
     def run(self, raw_xml_outputs: Iterable[str]) -> Tuple[Stage1TrajectoryStep, ...]:
         self.reset()
         for turn_index, raw_xml in enumerate(raw_xml_outputs):
             trajectory_step = self.step(raw_xml, turn_index=turn_index)
+            if trajectory_step.episode_over or trajectory_step.action == "STOP":
+                break
+        return tuple(self.trajectory)
+
+    def run_with_policy(self, policy: object, max_steps: int) -> Tuple[Stage1TrajectoryStep, ...]:
+        """Run a policy for at most ``max_steps`` turns or until task STOP."""
+
+        if max_steps < 1:
+            raise ValueError("max_steps must be at least 1")
+        self.reset()
+        for turn_index in range(max_steps):
+            trajectory_step = self.step_with_policy(policy, turn_index=turn_index)
             if trajectory_step.episode_over or trajectory_step.action == "STOP":
                 break
         return tuple(self.trajectory)

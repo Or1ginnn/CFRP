@@ -104,6 +104,36 @@ def test_hold_does_not_change_plan():
     assert runner.controller.current_plan == initial_plan
 
 
+class FakeStage1Policy:
+    def __init__(self, outputs: tuple[str, ...]) -> None:
+        self.outputs = iter(outputs)
+        self.requests = []
+
+    def generate_xml(self, request):
+        self.requests.append(request)
+        return next(self.outputs)
+
+
+def test_policy_runner_reuses_history_prompt_protocol_and_action_path():
+    runner = Stage1EpisodeRunner(FakeWrapper(), plan())
+    policy = FakeStage1Policy(
+        (
+            stage1_xml("advance", "MOVE_FORWARD"),
+            stage1_xml("hold", "STOP"),
+        )
+    )
+
+    trajectory = runner.run_with_policy(policy, max_steps=3)
+
+    assert [step.action for step in trajectory] == ["MOVE_FORWARD", "STOP"]
+    assert runner.env_wrapper.step_calls == ["MOVE_FORWARD", "STOP"]
+    assert policy.requests[0].instruction == "instruction-reset"
+    assert policy.requests[0].visual_history == ("rgb-reset",)
+    assert policy.requests[1].visual_history == ("rgb-reset", "rgb-after-1")
+    assert policy.requests[1].action_history == ("MOVE_FORWARD",)
+    assert policy.requests[1].current_plan.current_points()[0].id == "p2"
+
+
 @pytest.mark.parametrize(
     "raw_xml",
     [

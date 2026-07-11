@@ -11,7 +11,8 @@ from .protocol import CFRPOutput, CFRPProtocolError, PlanState, apply_plan_updat
 class ControllerStepResult:
     action: str
     current_plan: PlanState | None
-    tool: str
+    tool: str | None
+    progress: str | None
     subgoal: str
 
 
@@ -20,15 +21,21 @@ class CFRPController:
     allowed_actions: set[str]
     current_plan: PlanState | None = None
     action_history: list[str] = field(default_factory=list)
+    mode: str = "stage2"
 
     def step(self, output: CFRPOutput) -> ControllerStepResult:
         validate_output(
             output,
             allowed_actions=self.allowed_actions,
             previous_plan=self.current_plan,
+            mode=self.mode,
         )
 
-        if output.tool == "continue":
+        if self.mode == "stage1":
+            assert self.current_plan is not None
+            if output.progress == "advance":
+                self.current_plan = self.current_plan.advance_current()
+        elif output.tool == "continue":
             if self.current_plan is None and output.plan is not None:
                 self.current_plan = output.plan
             elif self.current_plan is None:
@@ -48,5 +55,6 @@ class CFRPController:
             action=output.action,
             current_plan=self.current_plan,
             tool=output.tool,
+            progress=output.progress,
             subgoal=output.subgoal,
         )

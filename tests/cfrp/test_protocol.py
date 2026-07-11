@@ -64,6 +64,20 @@ PLAN_UPDATE_XML = """
 """
 
 
+STAGE1_HOLD_XML = """
+<progress>hold</progress>
+<subgoal>exit the bedroom through the doorway</subgoal>
+<action>MOVE_FORWARD</action>
+"""
+
+
+STAGE1_ADVANCE_XML = """
+<progress>advance</progress>
+<subgoal>follow the hallway toward the stairs</subgoal>
+<action>MOVE_FORWARD</action>
+"""
+
+
 def test_parse_and_validate_initial_continue_with_plan():
     output = parse_cfrp_output(INIT_XML)
 
@@ -83,6 +97,80 @@ def test_controller_runs_init_then_continue():
     assert first.action == "MOVE_FORWARD"
     assert second.action == "MOVE_FORWARD"
     assert second.current_plan == first.current_plan
+
+
+def test_stage1_controller_holds_then_advances_plan_cursor():
+    plan = parse_cfrp_output(INIT_XML).plan
+    assert plan is not None
+    controller = CFRPController(
+        allowed_actions=ALLOWED_ACTIONS,
+        current_plan=plan,
+        mode="stage1",
+    )
+
+    held = controller.step(parse_cfrp_output(STAGE1_HOLD_XML))
+    advanced = controller.step(parse_cfrp_output(STAGE1_ADVANCE_XML))
+
+    assert held.progress == "hold"
+    assert held.current_plan == plan
+    assert advanced.progress == "advance"
+    assert advanced.current_plan is not None
+    assert advanced.current_plan.current_index == 1
+    assert advanced.current_plan.points[0].status == "done"
+    assert advanced.current_plan.points[0].text == plan.points[0].text
+    assert advanced.current_plan.points[1].status == "current"
+
+
+def test_stage1_rejects_tool_and_plan_updates():
+    plan = parse_cfrp_output(INIT_XML).plan
+    assert plan is not None
+
+    with pytest.raises(CFRPProtocolError, match="must not contain <tool>"):
+        validate_output(
+            parse_cfrp_output(CONTINUE_XML),
+            ALLOWED_ACTIONS,
+            previous_plan=plan,
+            mode="stage1",
+        )
+
+    with pytest.raises(CFRPProtocolError, match="must not contain plan updates"):
+        validate_output(
+            parse_cfrp_output(
+                STAGE1_HOLD_XML
+                + "<plan_update><abandon>p1</abandon><current>x</current><future>y</future></plan_update>"
+            ),
+            ALLOWED_ACTIONS,
+            previous_plan=plan,
+            mode="stage1",
+        )
+
+
+def test_stage1_requires_valid_progress_and_controller_plan():
+    output = parse_cfrp_output(STAGE1_HOLD_XML.replace("hold", "done", 1))
+    plan = parse_cfrp_output(INIT_XML).plan
+    assert plan is not None
+
+    with pytest.raises(CFRPProtocolError, match="invalid progress"):
+        validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
+    with pytest.raises(CFRPProtocolError, match="controller-owned"):
+        validate_output(
+            parse_cfrp_output(STAGE1_HOLD_XML), ALLOWED_ACTIONS, mode="stage1"
+        )
+
+
+def test_plan_cursor_cannot_advance_past_final_point():
+    plan = parse_cfrp_output(
+        """
+        <plan><global>reach target</global><local>
+          <p id="p1" status="current">stop at target</p>
+        </local></plan>
+        <tool>continue</tool><subgoal>stop at target</subgoal><action>STOP</action>
+        """
+    ).plan
+    assert plan is not None
+
+    with pytest.raises(CFRPProtocolError, match="following todo"):
+        plan.advance_current()
 
 
 def test_replan_updates_plan_after_initialization():

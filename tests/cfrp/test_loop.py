@@ -1,6 +1,6 @@
 import pytest
 
-from vlnce_server.cfrp import CFRPProtocolError, run_scripted_cfrp_loop
+from vlnce_server.cfrp import CFRPProtocolError, PlanPoint, PlanState, run_scripted_cfrp_loop
 
 
 ALLOWED_ACTIONS = ("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP")
@@ -88,3 +88,29 @@ def test_scripted_loop_requires_enough_model_outputs():
             model_outputs=("",),
             allowed_actions=ALLOWED_ACTIONS,
         )
+
+
+def test_stage1_scripted_loop_advances_controller_owned_plan():
+    plan = PlanState(
+        global_goal="bedroom -> hallway -> target",
+        points=(
+            PlanPoint("p1", "current", "exit bedroom"),
+            PlanPoint("p2", "todo", "follow hallway"),
+        ),
+    )
+    turns = run_scripted_cfrp_loop(
+        full_instruction="Exit the bedroom and follow the hallway.",
+        observations=("t0: doorway", "t1: hallway"),
+        model_outputs=(
+            "<progress>advance</progress><subgoal>follow hallway</subgoal><action>MOVE_FORWARD</action>",
+            "<progress>hold</progress><subgoal>follow hallway</subgoal><action>STOP</action>",
+        ),
+        allowed_actions=ALLOWED_ACTIONS,
+        mode="stage1",
+        initial_plan=plan,
+    )
+
+    assert [turn.progress for turn in turns] == ["advance", "hold"]
+    assert [turn.tool for turn in turns] == [None, None]
+    assert 'id="p2" status="current"' in turns[0].current_plan_xml
+    assert "<tool>" not in turns[1].raw_output

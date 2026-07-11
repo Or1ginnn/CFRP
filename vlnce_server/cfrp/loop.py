@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from .controller import CFRPController
 from .prompts import build_step_prompt
-from .protocol import parse_cfrp_output
+from .protocol import PlanState, parse_cfrp_output
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,8 @@ class CFRPLoopTurn:
     turn_index: int
     prompt: str
     raw_output: str
-    tool: str
+    tool: str | None
+    progress: str | None
     subgoal: str
     action: str
     current_plan_xml: str | None
@@ -35,6 +36,8 @@ def run_scripted_cfrp_loop(
     allowed_actions: Sequence[str],
     active_instruction_excerpt: str | None = None,
     max_history: int = 3,
+    mode: str = "stage2",
+    initial_plan: PlanState | None = None,
 ) -> list[CFRPLoopTurn]:
     """Run a deterministic CFRP loop with scripted model XML outputs.
 
@@ -49,7 +52,9 @@ def run_scripted_cfrp_loop(
     if max_history < 0:
         raise ValueError("max_history must be non-negative")
 
-    controller = CFRPController(allowed_actions=set(allowed_actions))
+    controller = CFRPController(
+        allowed_actions=set(allowed_actions), current_plan=initial_plan, mode=mode
+    )
     turns: list[CFRPLoopTurn] = []
     recent_actions: list[str] = []
     recent_observations: list[str] = []
@@ -63,6 +68,7 @@ def run_scripted_cfrp_loop(
             recent_actions=recent_actions[-max_history:] if max_history else (),
             current_plan=controller.current_plan,
             active_instruction_excerpt=active_instruction_excerpt,
+            mode=mode,
         )
         raw_output = model_outputs[turn_index]
         result = controller.step(parse_cfrp_output(raw_output))
@@ -75,6 +81,7 @@ def run_scripted_cfrp_loop(
                 prompt=prompt,
                 raw_output=raw_output.strip(),
                 tool=result.tool,
+                progress=result.progress,
                 subgoal=result.subgoal,
                 action=result.action,
                 current_plan_xml=current_plan_xml,

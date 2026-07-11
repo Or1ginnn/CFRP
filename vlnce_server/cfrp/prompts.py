@@ -22,6 +22,15 @@ Done plan points are immutable. A new plan must contain exactly one current poin
 The <action> field must contain exactly one action selected from the current step's Allowed actions.
 """
 
+STAGE1_SYSTEM_PROMPT = """You are a continuous Vision-and-Language Navigation agent.
+
+The controller owns a persistent structured plan. Read it as execution context; do not rewrite it.
+Output only XML with exactly one <progress>, one <subgoal>, and one <action> field.
+Set <progress> to hold or advance. advance moves the normal plan cursor to the next point.
+Do not output <tool>, <plan>, <plan_update>, or free-form reasoning.
+STOP is a primitive action. The <action> must be selected from the current Allowed actions.
+"""
+
 
 def build_step_prompt(
     *,
@@ -32,9 +41,14 @@ def build_step_prompt(
     recent_actions: Sequence[str] | None = None,
     current_plan: PlanState | None = None,
     active_instruction_excerpt: str | None = None,
+    mode: str = "stage2",
 ) -> str:
     history_lines = _format_lines(recent_visual_history or (), empty="None")
     action_lines = _format_lines(recent_actions or (), empty="None")
+    if mode not in {"stage1", "stage2"}:
+        raise ValueError(f"invalid protocol mode: {mode}")
+    if mode == "stage1" and current_plan is None:
+        raise ValueError("Stage 1 prompt requires a controller-owned current plan")
     plan_text = current_plan.to_xml() if current_plan else "None. Please initialize the plan."
     excerpt = active_instruction_excerpt if active_instruction_excerpt else "None"
 

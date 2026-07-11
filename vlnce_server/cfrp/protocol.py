@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 
 
 VALID_TOOLS = {"continue", "replan"}
+VALID_PROGRESS = {"hold", "advance"}
+VALID_PROTOCOL_MODES = {"stage1", "stage2"}
 VALID_PLAN_STATUSES = {"done", "current", "todo", "abandoned"}
 
 
@@ -38,6 +40,49 @@ class PlanState:
     def done_points_by_id(self) -> dict[str, PlanPoint]:
         return {point.id: point for point in self.points if point.status == "done"}
 
+    @property
+    def current_index(self) -> int:
+        current_indices = [
+            index for index, point in enumerate(self.points) if point.status == "current"
+        ]
+        if len(current_indices) != 1:
+            raise CFRPProtocolError("plan must contain exactly one current point")
+        return current_indices[0]
+
+    def advance_current(self) -> PlanState:
+        """Advance the normal execution cursor without rewriting plan content."""
+
+        current_index = self.current_index
+        next_index = next(
+            (
+                index
+                for index in range(current_index + 1, len(self.points))
+                if self.points[index].status == "todo"
+            ),
+            None,
+        )
+        if next_index is None:
+            raise CFRPProtocolError("cannot advance plan without a following todo point")
+
+        advanced_points = tuple(
+            PlanPoint(
+                id=point.id,
+                status=(
+                    "done"
+                    if index == current_index
+                    else "current"
+                    if index == next_index
+                    else point.status
+                ),
+                text=point.text,
+            )
+            for index, point in enumerate(self.points)
+        )
+        advanced = PlanState(global_goal=self.global_goal, points=advanced_points)
+        validate_plan(advanced)
+        validate_done_points_immutable(self, advanced)
+        return advanced
+
     def to_xml(self) -> str:
         lines = ["<plan>", f"  <global>{escape(self.global_goal)}</global>", "  <local>"]
         for point in self.points:
@@ -60,9 +105,10 @@ class PlanUpdate:
 
 @dataclass(frozen=True)
 class CFRPOutput:
-    tool: str
     subgoal: str
     action: str
+    tool: str | None = None
+    progress: str | None = None
     plan: PlanState | None = None
     plan_update: PlanUpdate | None = None
     raw_xml: str = ""
@@ -95,12 +141,14 @@ def parse_cfrp_output(text: str) -> CFRPOutput:
 
     plan = _parse_plan(plan_nodes[0]) if plan_nodes else None
     plan_update = _parse_plan_update(plan_update_nodes[0]) if plan_update_nodes else None
-    tool = _required_text(root, "tool")
+    tool = _optional_text(root, "tool")
+    progress = _optional_text(root, "progress")
     subgoal = _required_text(root, "subgoal")
     action = _required_text(root, "action")
 
     return CFRPOutput(
         tool=tool,
+        progress=progress,
         subgoal=subgoal,
         action=action,
         plan=plan,
@@ -113,6 +161,7 @@ def validate_output(
     output: CFRPOutput,
     allowed_actions: set[str] | list[str] | tuple[str, ...],
     previous_plan: PlanState | None = None,
+    mode: str = "stage2",
 ) -> None:
     """Validate a parsed CFRP output.
 
@@ -123,13 +172,25 @@ def validate_output(
             points when replanning.
     """
 
+    if mode not in VALID_PROTOCOL_MODES:
+        raise ValueError(f"invalid protocol mode: {mode}")
+
     allowed_action_set = set(allowed_actions)
+    if mode == "stage1":
+        _validate_stage1_output(output, previous_plan)
+    else:
+        _validate_stage2_output(output, previous_plan)
+
     if output.tool not in VALID_TOOLS:
-        raise CFRPProtocolError(f"invalid tool: {output.tool}")
+        if mode == "stage2":
+            raise CFRPProtocolError(f"invalid tool: {output.tool}")
     if output.action not in allowed_action_set:
         raise CFRPProtocolError(f"invalid action: {output.action}")
     if not output.subgoal:
         raise CFRPProtocolError("missing subgoal")
+
+    if mode == "stage1":
+        return
 
     if output.tool == "continue":
         if output.plan_update is not None:
@@ -149,6 +210,22 @@ def validate_output(
             if previous_plan is None:
                 raise CFRPProtocolError("replan <plan_update> requires an existing plan")
             validate_plan_update(previous_plan, output.plan_update)
+
+
+def _validate_stage1_output(output: CFRPOutput, previous_plan: PlanState | None) -> None:
+    if output.tool is not None:
+        raise CFRPProtocolError("Stage 1 output must not contain <tool>")
+    if output.progress not in VALID_PROGRESS:
+        raise CFRPProtocolError(f"invalid progress: {output.progress}")
+    if output.plan is not None or output.plan_update is not None:
+        raise CFRPProtocolError("Stage 1 output must not contain plan updates")
+    if previous_plan is None:
+        raise CFRPProtocolError("Stage 1 requires a controller-owned current plan")
+
+
+def _validate_stage2_output(output: CFRPOutput, previous_plan: PlanState | None) -> None:
+    if output.progress is not None:
+        raise CFRPProtocolError("Stage 2 output must not contain <progress>")
 
 
 def validate_plan(plan: PlanState) -> None:
@@ -263,6 +340,18 @@ def _required_text(root: ET.Element, tag: str) -> str:
     nodes = root.findall(tag)
     if len(nodes) != 1:
         raise CFRPProtocolError(f"expected exactly one <{tag}> field")
+    text = _node_text(nodes[0])
+    if not text:
+        raise CFRPProtocolError(f"empty <{tag}> field")
+    return text
+
+
+def _optional_text(root: ET.Element, tag: str) -> str | None:
+    nodes = root.findall(tag)
+    if len(nodes) > 1:
+        raise CFRPProtocolError(f"expected at most one <{tag}> field")
+    if not nodes:
+        return None
     text = _node_text(nodes[0])
     if not text:
         raise CFRPProtocolError(f"empty <{tag}> field")

@@ -14,8 +14,10 @@ from .records import (
     NavigationStep,
     PrivilegedNavigationState,
 )
+from .stage1_runner import FixedHistoryBuffer, Stage1EpisodeRunner, Stage1TrajectoryStep
 
 __all__ = [
+    "FixedHistoryBuffer",
     "Habitat030NavigationEnvironment",
     "NavigationMetrics",
     "NavigationObservation",
@@ -24,6 +26,8 @@ __all__ = [
     "R2REpisodeNotFoundError",
     "R2REpisodeRecord",
     "R2RSceneNotFoundError",
+    "Stage1EpisodeRunner",
+    "Stage1TrajectoryStep",
     "load_r2r_dataset",
     "load_r2r_episode",
 ]

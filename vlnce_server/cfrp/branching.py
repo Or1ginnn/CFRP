@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence, Union
 
 from .checkpoint import CFRPCheckpoint
 from .protocol import CFRPProtocolError, parse_cfrp_output
@@ -12,7 +12,7 @@ from .protocol import CFRPProtocolError, parse_cfrp_output
 
 Vector = tuple[float, ...]
 BranchTool = Literal["continue", "replan"]
-InfoScalar = str | int | float | bool | None
+InfoScalar = Union[str, int, float, bool, None]
 
 
 class CFRPBranchingError(ValueError):

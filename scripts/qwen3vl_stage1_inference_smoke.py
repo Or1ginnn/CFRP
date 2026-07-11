@@ -59,13 +59,13 @@ def main() -> int:
     )
     policy = Qwen3VLStage1Policy.from_pretrained(args.model, max_new_tokens=args.max_new_tokens)
     raw_xml = policy.generate_xml(request)
+    print(f"raw_xml={raw_xml}")
     output = parse_cfrp_output(raw_xml)
     validate_output(output, request.allowed_actions, previous_plan=request.current_plan, mode="stage1")
 
     print(f"model={args.model}")
     print(f"rgb_npy={rgb_path}")
     print(f"rgb_shape={tuple(rgb_array.shape)}")
-    print(f"raw_xml={raw_xml}")
     print(f"progress={output.progress} action={output.action}")
     print("qwen3vl_stage1_inference_smoke: OK")
     return 0

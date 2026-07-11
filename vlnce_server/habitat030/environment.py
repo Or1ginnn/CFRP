@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from numbers import Number
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
@@ -36,10 +37,14 @@ class Habitat030NavigationEnvironment:
         self.action_adapter = action_adapter or HabitatActionAdapter()
         self.fallback_instruction = fallback_instruction
         self._last_raw_observation: Optional[Mapping[str, Any]] = None
+        self._path_length = 0.0
+        self._last_position: Optional[Tuple[float, ...]] = None
 
     def reset(self) -> NavigationObservation:
         raw_observation = self.env.reset()
         self._last_raw_observation = _as_mapping(raw_observation)
+        self._path_length = 0.0
+        self._last_position = self._current_position()
         return self._navigation_observation(self._last_raw_observation)
 
     def step(self, cfrp_action: str) -> NavigationStep:
@@ -48,6 +53,7 @@ class Habitat030NavigationEnvironment:
             raise ValueError(f"CFRP action has no Habitat task action: {cfrp_action}")
         raw_observation = self.env.step(command.habitat_action)
         self._last_raw_observation = _as_mapping(raw_observation)
+        self._accumulate_path_length()
         return NavigationStep(
             observation=self._navigation_observation(self._last_raw_observation),
             metrics=self.metrics(),
@@ -67,11 +73,12 @@ class Habitat030NavigationEnvironment:
             if number is not None:
                 extra.append((str(key), number))
         extra.sort(key=lambda item: item[0])
+        native_path_length = _to_optional_float(metrics.get("path_length"))
         return NavigationMetrics(
             distance_to_goal=_to_optional_float(metrics.get("distance_to_goal")),
             success=_to_optional_float(metrics.get("success")),
             spl=_to_optional_float(metrics.get("spl")),
-            path_length=_to_optional_float(metrics.get("path_length")),
+            path_length=native_path_length if native_path_length is not None else self._path_length,
             extra=tuple(extra),
         )
 
@@ -108,9 +115,9 @@ class Habitat030NavigationEnvironment:
         if text:
             return text
         episode_instruction = getattr(episode, "instruction", None)
-        text = getattr(episode_instruction, "instruction_text", None)
+        text = _instruction_text(episode_instruction)
         if text:
-            return str(text)
+            return text
         if self.fallback_instruction is not None:
             return self.fallback_instruction
         return ""
@@ -120,6 +127,16 @@ class Habitat030NavigationEnvironment:
         if value is None:
             return bool(fallback_when_stop)
         return bool(value)
+
+    def _current_position(self) -> Tuple[float, ...]:
+        state = self.env.sim.get_agent_state()
+        return _to_float_tuple(state.position)
+
+    def _accumulate_path_length(self) -> None:
+        current_position = self._current_position()
+        if self._last_position is not None:
+            self._path_length += _euclidean_distance(self._last_position, current_position)
+        self._last_position = current_position
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
@@ -136,10 +153,16 @@ def _instruction_text(instruction: Any) -> str:
     if isinstance(instruction, str):
         return instruction
     if isinstance(instruction, Mapping):
-        text = instruction.get("text")
-        return "" if text is None else str(text)
-    text = getattr(instruction, "text", None)
-    return "" if text is None else str(text)
+        for key in ("text", "instruction_text"):
+            text = instruction.get(key)
+            if text:
+                return str(text)
+        return ""
+    for attr_name in ("text", "instruction_text"):
+        text = getattr(instruction, attr_name, None)
+        if text:
+            return str(text)
+    return ""
 
 
 def _to_optional_float(value: Any) -> Optional[float]:
@@ -203,3 +226,9 @@ def _path_to_tuple(path: Iterable[Any]) -> Tuple[Tuple[float, ...], ...]:
         position = getattr(point, "position", point)
         points.append(_to_float_tuple(position))
     return tuple(points)
+
+
+def _euclidean_distance(left: Tuple[float, ...], right: Tuple[float, ...]) -> float:
+    if len(left) != len(right):
+        return 0.0
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(left, right)))

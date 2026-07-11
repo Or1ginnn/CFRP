@@ -142,6 +142,7 @@ def test_metrics_extract_standard_and_extra_numeric_values():
     "instruction,expected",
     [
         ({"text": "dict text"}, "dict text"),
+        ({"instruction_text": "dict instruction"}, "dict instruction"),
         (type("InstructionObject", (), {"text": "object text"})(), "object text"),
         ("string text", "string text"),
     ],
@@ -195,3 +196,62 @@ def test_close_forwards_to_env_close():
     wrapper.close()
 
     assert env.closed is True
+
+
+@dataclass
+class MovingFakeAgentState:
+    position: tuple[float, ...]
+    rotation: tuple[float, ...] = (1.0, 0.0, 0.0, 0.0)
+
+
+class MovingFakeSimulator:
+    def __init__(self):
+        self.position = (0.0, 0.0, 0.0)
+
+    def get_agent_state(self):
+        return MovingFakeAgentState(self.position)
+
+
+class PathLengthFakeEnv(StrictFakeEnv):
+    def __init__(self):
+        super().__init__(metrics={"distance_to_goal": 10.0, "success": 0.0, "spl": 0.0})
+        self.sim = MovingFakeSimulator()
+
+    def reset(self):
+        self.sim.position = (0.0, 0.0, 0.0)
+        return self.reset_observation
+
+    def step(self, action):
+        self.step_calls.append(action)
+        if action == "move_forward":
+            x, y, z = self.sim.position
+            self.sim.position = (x + 3.0, y, z + 4.0)
+        if action == "stop":
+            self.episode_over = True
+        return self.step_observation
+
+
+def test_path_length_fallback_accumulates_forward_motion_only():
+    env = PathLengthFakeEnv()
+    wrapper = Habitat030NavigationEnvironment(env)
+    wrapper.reset()
+
+    forward = wrapper.step("MOVE_FORWARD")
+    left = wrapper.step("TURN_LEFT")
+    right = wrapper.step("TURN_RIGHT")
+
+    assert forward.metrics.path_length == 5.0
+    assert left.metrics.path_length == 5.0
+    assert right.metrics.path_length == 5.0
+
+
+def test_path_length_fallback_reset_clears_accumulator():
+    env = PathLengthFakeEnv()
+    wrapper = Habitat030NavigationEnvironment(env)
+    wrapper.reset()
+    wrapper.step("MOVE_FORWARD")
+
+    observation = wrapper.reset()
+
+    assert observation.episode_id == "episode-1"
+    assert wrapper.metrics().path_length == 0.0

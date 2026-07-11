@@ -1,6 +1,13 @@
 """Habitat 0.3 navigation wrapper for CFRP."""
 
 from .environment import Habitat030NavigationEnvironment
+from .r2r_dataset import (
+    R2REpisodeRecord,
+    R2REpisodeNotFoundError,
+    R2RSceneNotFoundError,
+    load_r2r_dataset,
+    load_r2r_episode,
+)
 from .records import (
     NavigationMetrics,
     NavigationObservation,
@@ -14,4 +21,9 @@ __all__ = [
     "NavigationObservation",
     "NavigationStep",
     "PrivilegedNavigationState",
+    "R2REpisodeNotFoundError",
+    "R2REpisodeRecord",
+    "R2RSceneNotFoundError",
+    "load_r2r_dataset",
+    "load_r2r_episode",
 ]

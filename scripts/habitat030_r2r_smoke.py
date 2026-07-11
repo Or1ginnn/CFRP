@@ -13,14 +13,10 @@ from vlnce_server.habitat030 import Habitat030NavigationEnvironment, NavigationO
 from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
 
 
-DEFAULT_DATASET_ROOT = "/mnt/data1/zar/plan_vln/data/datasets/R2R_VLNCE_v1-3_preprocessed"
-DEFAULT_SCENES_DIR = "/mnt/data1/zar/plan_vln/data/scene_datasets"
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a real R2R-CE Habitat 0.3 smoke test.")
-    parser.add_argument("--dataset-root", default=DEFAULT_DATASET_ROOT)
-    parser.add_argument("--scenes-dir", default=DEFAULT_SCENES_DIR)
+    parser.add_argument("--dataset-root", required=True)
+    parser.add_argument("--scenes-dir", required=True)
     parser.add_argument("--split", default="val_seen")
     parser.add_argument("--episode-id", default=None)
     parser.add_argument("--config", required=True)

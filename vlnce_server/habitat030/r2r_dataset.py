@@ -33,9 +33,9 @@ class R2REpisodeNotFoundError(LookupError):
 
 def load_r2r_episode(
     dataset_root: str,
+    scenes_dir: str,
     split: str = "val_seen",
     episode_id: Optional[str] = None,
-    scenes_dir: str = "/mnt/data1/zar/plan_vln/data/scene_datasets",
 ) -> R2REpisodeRecord:
     records = load_r2r_dataset(
         dataset_root=dataset_root,
@@ -52,9 +52,9 @@ def load_r2r_episode(
 def load_r2r_dataset(
     dataset_root: str,
     split: str,
+    scenes_dir: str,
     episode_ids: Optional[Iterable[str]] = None,
     limit: Optional[int] = None,
-    scenes_dir: str = "/mnt/data1/zar/plan_vln/data/scene_datasets",
 ) -> Tuple[R2REpisodeRecord, ...]:
     path = Path(dataset_root) / split / f"{split}.json.gz"
     if not path.exists():

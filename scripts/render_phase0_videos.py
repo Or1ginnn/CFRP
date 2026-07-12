@@ -1,0 +1,101 @@
+"""Render deterministic success/failure GIF clips from a Phase 0 evaluation run."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import random
+from pathlib import Path
+from typing import Any, Iterable
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", required=True, help="qwen-baseline-* directory containing summary.json")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--samples-per-outcome", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--frame-duration-ms", type=int, default=250)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    if args.samples_per_outcome < 1 or args.frame_duration_ms < 1:
+        raise ValueError("samples-per-outcome and frame-duration-ms must be positive")
+    run_dir = Path(args.run_dir)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    episodes = summary["repetitions"][0]["episodes"]
+    selected = select_outcome_episodes(episodes, args.samples_per_outcome, args.seed)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=False)
+    rendered: dict[str, list[dict[str, Any]]] = {"success": [], "failure": []}
+    for outcome, items in selected.items():
+        outcome_dir = output_dir / outcome
+        for index, episode in enumerate(items, start=1):
+            destination = outcome_dir / f"{index:02d}_episode-{episode['episode_id']}.gif"
+            frame_paths = episode_frame_paths(episode)
+            if not frame_paths:
+                continue
+            render_gif(frame_paths, destination, args.frame_duration_ms)
+            rendered[outcome].append(
+                {
+                    "episode_id": episode["episode_id"],
+                    "path": str(destination),
+                    "frames": len(frame_paths),
+                }
+            )
+    (output_dir / "video_selection.json").write_text(
+        json.dumps({"schema": "cfrp.phase0.video_selection.v1", "seed": args.seed, "rendered": rendered}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"success_videos={len(rendered['success'])}")
+    print(f"failure_videos={len(rendered['failure'])}")
+    print(f"video_dir={output_dir}")
+    print("render_phase0_videos: OK")
+    return 0
+
+
+def select_outcome_episodes(
+    episodes: Iterable[dict[str, Any]], samples_per_outcome: int, seed: int
+) -> dict[str, list[dict[str, Any]]]:
+    outcomes = {"success": [], "failure": []}
+    for episode in episodes:
+        success = float(episode.get("final_metrics", {}).get("success") or 0.0) >= 1.0
+        outcomes["success" if success else "failure"].append(episode)
+    rng = random.Random(seed)
+    selected = {}
+    for outcome, items in outcomes.items():
+        candidates = sorted(items, key=lambda item: str(item["episode_id"]))
+        selected[outcome] = rng.sample(candidates, min(samples_per_outcome, len(candidates)))
+    return selected
+
+
+def episode_frame_paths(episode: dict[str, Any]) -> list[str]:
+    paths = []
+    for step in episode.get("steps", []):
+        history = step.get("history") or {}
+        rgb_paths = history.get("rgb_paths") or []
+        if rgb_paths:
+            latest = str(rgb_paths[-1])
+            if not paths or paths[-1] != latest:
+                paths.append(latest)
+    return paths
+
+
+def render_gif(frame_paths: list[str], destination: Path, duration_ms: int) -> None:
+    try:
+        import numpy as np
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("video rendering requires numpy and Pillow") from exc
+    frames = [Image.fromarray(np.load(path)).convert("RGB") for path in frame_paths]
+    if not frames:
+        raise ValueError("cannot render an empty frame sequence")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(destination, save_all=True, append_images=frames[1:], duration=duration_ms, loop=0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

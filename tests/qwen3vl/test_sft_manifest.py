@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import ModuleType
 
 import pytest
 
+from scripts.convert_stage1_warmup_to_sft import _export_images
 from scripts.train_qwen3vl_stage1_sft import _messages_with_processor_image_paths
 from vlnce_server.qwen3vl.llamafactory_data import make_llamafactory_stage1_example
 from vlnce_server.qwen3vl.sft_data import SFT_SCHEMA
@@ -77,6 +79,32 @@ def test_llamafactory_export_preserves_target_and_image_order():
     assert converted["conversations"][1]["value"] == source["target_xml"]
     assert converted["images"] == ["/tmp/frame.png"]
     assert converted["conversations"][0]["value"].count("<image>") == 1
+
+
+def test_warmup_image_export_reuses_identical_source_frame(tmp_path: Path, monkeypatch):
+    class FakeImage:
+        @staticmethod
+        def fromarray(_array):
+            return FakeImage()
+
+        def save(self, path):
+            Path(path).write_bytes(b"fake-png")
+
+    fake_numpy = ModuleType("numpy")
+    fake_numpy.load = lambda _path: object()
+    fake_pil = ModuleType("PIL")
+    fake_pil.Image = FakeImage
+    monkeypatch.setitem(sys.modules, "numpy", fake_numpy)
+    monkeypatch.setitem(sys.modules, "PIL", fake_pil)
+
+    source = tmp_path / "frame.npy"
+    source.write_bytes(b"placeholder")
+    record = {"model_input": {"visual_history_paths": [str(source), str(source)]}}
+
+    exported = _export_images(record, tmp_path / "images", {})
+
+    assert exported[0] == exported[1]
+    assert len(list((tmp_path / "images").glob("*.png"))) == 1
 
 
 def test_sft_dry_run_executes_main_and_writes_manifest(tmp_path: Path):

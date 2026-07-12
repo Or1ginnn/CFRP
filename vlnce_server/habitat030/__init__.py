@@ -15,6 +15,7 @@ from .records import (
     PrivilegedNavigationState,
 )
 from .stage1_runner import FixedHistoryBuffer, Stage1EpisodeRunner, Stage1TrajectoryStep
+from .oracle_actions import OracleActionError, cfrp_action_from_habitat_oracle
 
 __all__ = [
     "FixedHistoryBuffer",
@@ -22,12 +23,14 @@ __all__ = [
     "NavigationMetrics",
     "NavigationObservation",
     "NavigationStep",
+    "OracleActionError",
     "PrivilegedNavigationState",
     "R2REpisodeNotFoundError",
     "R2REpisodeRecord",
     "R2RSceneNotFoundError",
     "Stage1EpisodeRunner",
     "Stage1TrajectoryStep",
+    "cfrp_action_from_habitat_oracle",
     "load_r2r_dataset",
     "load_r2r_episode",
 ]

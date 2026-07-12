@@ -1,0 +1,18 @@
+from types import SimpleNamespace
+
+from scripts.habitat030_r2r_vllm_eval import _make_job
+
+
+def test_vllm_evaluation_job_preserves_batch_runtime_configuration(tmp_path):
+    args = SimpleNamespace(
+        dataset_root="/data/r2r", scenes_dir="/data/scenes", config="/config.yaml", split="val_seen", seed=123,
+        max_steps=160, max_visual_history=6, max_action_history=8, success_distance=3.0,
+        vllm_base_url="http://127.0.0.1:8000", vllm_model="cfrp-stage1", max_new_tokens=128, response_timeout=600.0,
+    )
+
+    job = _make_job(args, tmp_path, "7", 1)
+
+    assert job.episode_id == "7"
+    assert job.repeat_index == 1
+    assert job.max_visual_history == 6
+    assert job.vllm_model == "cfrp-stage1"

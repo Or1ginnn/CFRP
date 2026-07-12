@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vlnce_server.cfrp import PlanPoint, PlanState
-from vlnce_server.qwen3vl import Qwen3VLStage1Policy, Stage1ModelRequest, build_stage1_messages
+from vlnce_server.qwen3vl import Qwen3VLStage1Policy, Stage1ModelRequest, build_stage1_messages, make_openai_messages
 
 
 def plan() -> PlanState:
@@ -43,6 +43,16 @@ def test_stage1_messages_include_only_model_visible_context_in_order():
     rendered = "\n".join(str(item) for item in content)
     for forbidden in ("goal_positions", "distance_to_goal", "reference_path", "expert_path", "pose"):
         assert forbidden not in rendered
+
+
+def test_vllm_messages_preserve_text_and_image_order(monkeypatch):
+    monkeypatch.setattr("vlnce_server.qwen3vl.vllm_client._png_data_uri", lambda image: "data:" + image)
+
+    messages = make_openai_messages(request())
+
+    assert messages[0]["role"] == "system"
+    assert [item["type"] for item in messages[1]["content"]] == ["text", "text", "image_url", "text", "image_url"]
+    assert messages[1]["content"][2]["image_url"]["url"] == "data:rgb-oldest"
 
 
 class FakeInputs(dict):

@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--split", default="train")
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--max-steps", type=int, default=80)
+    parser.add_argument("--max-steps", type=int, default=160)
     parser.add_argument("--max-visual-history", type=int, default=4)
     parser.add_argument("--max-action-history", type=int, default=3)
     parser.add_argument("--success-distance", type=float, default=3.0)
@@ -66,31 +66,73 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
     records_path = output_dir / "stage1_warmup.jsonl"
-    manifest = {
-        "schema": "cfrp.stage1.warmup.v1",
-        "split": args.split,
-        "episode_ids": list(episode_ids),
-        "seed": args.seed,
-        "max_visual_history": args.max_visual_history,
-        "max_action_history": args.max_action_history,
-    }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-
     written = 0
     complete_episodes = 0
+    completed_episode_ids: list[str] = []
     with records_path.open("w", encoding="utf-8") as handle:
-        for episode_id in episode_ids:
-            records, complete = collect_episode(args, episode_id, output_dir)
-            for record in records:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                written += 1
-            complete_episodes += int(complete)
+        try:
+            for episode_id in episode_ids:
+                records, complete = collect_episode(args, episode_id, output_dir)
+                for record in records:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    written += 1
+                complete_episodes += int(complete)
+                if complete:
+                    completed_episode_ids.append(episode_id)
+        except Exception as exc:
+            _write_collection_status(
+                output_dir,
+                args,
+                episode_ids,
+                completed_episode_ids,
+                status="failed",
+                error=str(exc),
+            )
+            raise
+
+    _write_collection_status(
+        output_dir,
+        args,
+        episode_ids,
+        completed_episode_ids,
+        status="complete",
+    )
 
     print(f"records={written}")
     print(f"complete_episodes={complete_episodes}/{len(episode_ids)}")
     print(f"records_path={records_path}")
     print("habitat030_collect_stage1_warmup: OK")
     return 0
+
+
+def _write_collection_status(
+    output_dir: Path,
+    args: argparse.Namespace,
+    requested_episode_ids: Sequence[str],
+    completed_episode_ids: Sequence[str],
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Write a machine-readable status without mislabeling partial records."""
+
+    payload = {
+        "schema": "cfrp.stage1.warmup.v1",
+        "status": status,
+        "split": args.split,
+        "requested_episode_ids": list(requested_episode_ids),
+        "completed_episode_ids": list(completed_episode_ids),
+        "seed": args.seed,
+        "max_steps": args.max_steps,
+        "max_visual_history": args.max_visual_history,
+        "max_action_history": args.max_action_history,
+    }
+    if error is not None:
+        payload["error"] = error
+        destination = output_dir / "collection_status.json"
+    else:
+        destination = output_dir / "manifest.json"
+    destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _select_episode_ids(args: argparse.Namespace) -> tuple[str, ...]:

@@ -1,9 +1,11 @@
 from argparse import Namespace
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from scripts.habitat030_collect_stage1_warmup import _select_episode_ids
+from scripts.habitat030_collect_stage1_warmup import _select_episode_ids, _write_collection_status
 
 
 def test_select_episode_ids_keeps_explicit_order():
@@ -45,3 +47,21 @@ def test_select_episode_ids_rejects_out_of_range_shard(monkeypatch):
 
     with pytest.raises(ValueError, match="requested shard"):
         _select_episode_ids(args)
+
+
+def test_failed_collection_writes_status_instead_of_complete_manifest(tmp_path: Path):
+    args = Namespace(split="train", seed=123, max_steps=160, max_visual_history=4, max_action_history=3)
+
+    _write_collection_status(
+        tmp_path,
+        args,
+        ("1", "2"),
+        ("1",),
+        status="failed",
+        error="oracle did not terminate",
+    )
+
+    assert not (tmp_path / "manifest.json").exists()
+    status = json.loads((tmp_path / "collection_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "failed"
+    assert status["completed_episode_ids"] == ["1"]

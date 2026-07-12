@@ -22,6 +22,7 @@ from vlnce_server.habitat030 import (
     OracleActionError,
     cfrp_action_from_habitat_oracle,
 )
+from vlnce_server.habitat030.r2r_dataset import load_r2r_dataset
 from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
 from vlnce_server.habitat030.stage1_runner import FixedHistoryBuffer
 
@@ -31,7 +32,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--scenes-dir", required=True)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--episode-ids", required=True, help="Comma-separated R2R IDs")
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--episode-ids", help="Comma-separated R2R IDs")
+    selection.add_argument(
+        "--episode-count",
+        type=int,
+        help="Collect a deterministic contiguous shard from the split; use with --episode-offset.",
+    )
+    parser.add_argument("--episode-offset", type=int, default=0)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--split", default="train")
     parser.add_argument("--seed", type=int, default=123)
@@ -54,9 +62,7 @@ def target_xml(progress: str, subgoal: str, action: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    episode_ids = tuple(item.strip() for item in args.episode_ids.split(",") if item.strip())
-    if not episode_ids:
-        raise ValueError("--episode-ids must contain at least one ID")
+    episode_ids = _select_episode_ids(args)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
     records_path = output_dir / "stage1_warmup.jsonl"
@@ -85,6 +91,32 @@ def main() -> int:
     print(f"records_path={records_path}")
     print("habitat030_collect_stage1_warmup: OK")
     return 0
+
+
+def _select_episode_ids(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.episode_ids is not None:
+        episode_ids = tuple(item.strip() for item in args.episode_ids.split(",") if item.strip())
+        if not episode_ids:
+            raise ValueError("--episode-ids must contain at least one ID")
+        return episode_ids
+    if args.episode_count is None or args.episode_count < 1:
+        raise ValueError("--episode-count must be at least one")
+    if args.episode_offset < 0:
+        raise ValueError("--episode-offset must not be negative")
+    # Load the real split order once so repeated collection jobs form stable,
+    # disjoint shards without hard-coding thousands of episode IDs in shell.
+    records = load_r2r_dataset(
+        dataset_root=args.dataset_root,
+        split=args.split,
+        scenes_dir=args.scenes_dir,
+    )
+    selected = records[args.episode_offset : args.episode_offset + args.episode_count]
+    if len(selected) != args.episode_count:
+        raise ValueError(
+            f"requested shard offset={args.episode_offset} count={args.episode_count}, "
+            f"but split has {len(records)} episodes"
+        )
+    return tuple(record.episode_id for record in selected)
 
 
 def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path) -> tuple[list[dict[str, Any]], bool]:

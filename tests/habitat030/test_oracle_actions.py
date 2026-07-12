@@ -42,3 +42,12 @@ class FakeHabitatRegistry:
 )
 def test_maps_habitat_singleton_ids_by_registered_action_names(action_id: int, expected: str):
     assert _cfrp_action_from_registry_id(action_id, FakeHabitatRegistry()) == expected
+
+
+class KeyErrorRegistry(FakeHabitatRegistry):
+    def __getattr__(self, name: str):
+        raise KeyError(name)
+
+
+def test_maps_registry_ids_when_missing_aliases_raise_key_error():
+    assert _cfrp_action_from_registry_id(1, KeyErrorRegistry()) == "MOVE_FORWARD"

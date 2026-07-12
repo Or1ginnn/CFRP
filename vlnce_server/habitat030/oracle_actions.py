@@ -52,7 +52,16 @@ def _cfrp_action_from_registry_id(action: Any, registry: Any) -> str:
     action_id = int(action)
     for cfrp_action, aliases in _HABITAT_ACTION_ALIASES.items():
         for alias in aliases:
-            value = getattr(registry, alias, None)
+            value = _registry_action_id(registry, alias)
             if value is not None and int(value) == action_id:
                 return cfrp_action
     raise OracleActionError(f"oracle action is not a CFRP primitive: {action_id}")
+
+
+def _registry_action_id(registry: Any, action_name: str) -> Any:
+    """Read a singleton registry entry despite Habitat's KeyError ``__getattr__``."""
+
+    try:
+        return getattr(registry, action_name)
+    except (AttributeError, KeyError):
+        return None

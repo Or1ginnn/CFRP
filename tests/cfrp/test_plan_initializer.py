@@ -24,6 +24,17 @@ def test_plan_initializer_caps_plan_points_and_is_deterministic():
     assert len(initialize_plan_from_instruction(instruction, max_points=2).points) == 2
 
 
+def test_plan_initializer_splits_and_only_before_navigation_verbs():
+    plan = initialize_plan_from_instruction(
+        "Go around the table and stop by the doorway with the dining table and mirror in it."
+    )
+
+    assert [point.text for point in plan.points] == [
+        "Go around the table",
+        "stop by the doorway with the dining table and mirror in it",
+    ]
+
+
 def test_advance_turn_indices_spread_cursor_updates_before_stop():
     plan = initialize_plan_from_instruction("Leave the room. Then cross the hall. Then stop.")
 

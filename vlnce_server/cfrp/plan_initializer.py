@@ -7,7 +7,11 @@ import re
 from .protocol import PlanPoint, PlanState
 
 
-_CLAUSE_BOUNDARY = re.compile(r"\s*(?:;|\.|\band then\b|\bthen\b)\s*", re.IGNORECASE)
+_NAVIGATION_VERB = r"(?:go|walk|head|move|turn|enter|exit|leave|continue|pass|stop|take|proceed|follow|approach|cross)"
+_CLAUSE_BOUNDARY = re.compile(
+    rf"\s*(?:;|\.|\band then\b|\bthen\b|\band\s+(?={_NAVIGATION_VERB}\b)|,\s*(?={_NAVIGATION_VERB}\b))\s*",
+    re.IGNORECASE,
+)
 
 
 def initialize_plan_from_instruction(instruction: str, max_points: int = 4) -> PlanState:

@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-visual-history", type=int, default=4)
     parser.add_argument("--max-action-history", type=int, default=3)
     parser.add_argument("--success-distance", type=float, default=3.0)
+    parser.add_argument(
+        "--oracle-goal-radius",
+        type=float,
+        default=0.2,
+        help="Conservative maximum radius for oracle STOP; Habitat success remains the hard check.",
+    )
     return parser.parse_args()
 
 
@@ -107,9 +113,10 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
         history = FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history).reset(observation)
         frame_paths = [_save_frame(observation.rgb, frames_dir, 0)]
         task_success_distance = _task_success_distance(env, args.success_distance)
+        follower_goal_radius = min(task_success_distance, args.oracle_goal_radius)
         follower = ShortestPathFollower(
             sim=env.sim,
-            goal_radius=task_success_distance,
+            goal_radius=follower_goal_radius,
             return_one_hot=False,
         )
         records = []
@@ -134,6 +141,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                     "oracle_only": {
                         "oracle_action": action,
                         "task_success_distance": task_success_distance,
+                        "follower_goal_radius": follower_goal_radius,
                         "agent_position": list(oracle_state.agent_position),
                         "goal_positions": [list(position) for position in oracle_state.goal_positions],
                         "expert_path": [list(position) for position in oracle_state.expert_path],
@@ -154,6 +162,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                     raise RuntimeError(
                         f"oracle STOP was not task-successful for episode {episode_id}; "
                         f"task_success_distance={task_success_distance} "
+                        f"follower_goal_radius={follower_goal_radius} "
                         f"distance_to_goal={step.metrics.distance_to_goal}"
                     )
                 return records, True

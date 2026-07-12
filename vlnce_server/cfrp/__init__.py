@@ -36,6 +36,17 @@ from .protocol import (
     parse_cfrp_output,
     validate_output,
 )
+from .rollout_exchange import (
+    Stage1RolloutRequest,
+    Stage1RolloutResponse,
+    read_request,
+    read_response,
+    request_path,
+    response_path,
+    wait_for_response,
+    write_request,
+    write_response,
+)
 
 __all__ = [
     "CFRPController",
@@ -63,13 +74,22 @@ __all__ = [
     "PlanState",
     "PlanUpdate",
     "RestoredCFRPState",
+    "Stage1RolloutRequest",
+    "Stage1RolloutResponse",
     "TrajectoryPrefix",
     "apply_plan_update",
     "capture_cfrp_checkpoint",
     "make_trajectory_prefix",
     "make_navigation_pose",
     "parse_cfrp_output",
+    "read_request",
+    "read_response",
+    "request_path",
+    "response_path",
     "run_scripted_cfrp_loop",
     "restore_cfrp_checkpoint",
     "validate_output",
+    "wait_for_response",
+    "write_request",
+    "write_response",
 ]

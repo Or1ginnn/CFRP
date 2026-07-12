@@ -14,6 +14,7 @@ def create_r2r_habitat_env(
     scenes_dir: str,
     split: str = "val_seen",
     episode_id: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> Tuple[object, R2REpisodeRecord]:
     import habitat
     from habitat.config.default import get_config
@@ -25,17 +26,20 @@ def create_r2r_habitat_env(
         scenes_dir=scenes_dir,
     )
     dataset = make_habitat_dataset((record,))
+    overrides = [
+        f"habitat.dataset.data_path={Path(dataset_root) / split / (split + '.json.gz')}",
+        f"habitat.dataset.scenes_dir={scenes_dir}",
+        f"habitat.dataset.split={split}",
+        "habitat.environment.iterator_options.shuffle=False",
+        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.width=128",
+        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.height=128",
+        "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.width=128",
+        "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.height=128",
+    ]
+    if seed is not None:
+        overrides.append(f"habitat.seed={seed}")
     config = get_config(
         str(config_path),
-        overrides=[
-            f"habitat.dataset.data_path={Path(dataset_root) / split / (split + '.json.gz')}",
-            f"habitat.dataset.scenes_dir={scenes_dir}",
-            f"habitat.dataset.split={split}",
-            "habitat.environment.iterator_options.shuffle=False",
-            "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.width=128",
-            "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.height=128",
-            "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.width=128",
-            "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.height=128",
-        ],
+        overrides=overrides,
     )
     return habitat.Env(config=config, dataset=dataset), record

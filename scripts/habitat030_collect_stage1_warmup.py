@@ -106,9 +106,10 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
         observation = wrapper.reset()
         history = FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history).reset(observation)
         frame_paths = [_save_frame(observation.rgb, frames_dir, 0)]
+        task_success_distance = _task_success_distance(env, args.success_distance)
         follower = ShortestPathFollower(
             sim=env.sim,
-            goal_radius=args.success_distance,
+            goal_radius=task_success_distance,
             return_one_hot=False,
         )
         records = []
@@ -132,6 +133,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                     "target_xml": target_xml(action),
                     "oracle_only": {
                         "oracle_action": action,
+                        "task_success_distance": task_success_distance,
                         "agent_position": list(oracle_state.agent_position),
                         "goal_positions": [list(position) for position in oracle_state.goal_positions],
                         "expert_path": [list(position) for position in oracle_state.expert_path],
@@ -147,7 +149,14 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                 args.max_visual_history,
             )
             if step.episode_over or action == "STOP":
-                return records, bool(step.metrics.success and step.metrics.success >= 1.0)
+                success = bool(step.metrics.success and step.metrics.success >= 1.0)
+                if not success:
+                    raise RuntimeError(
+                        f"oracle STOP was not task-successful for episode {episode_id}; "
+                        f"task_success_distance={task_success_distance} "
+                        f"distance_to_goal={step.metrics.distance_to_goal}"
+                    )
+                return records, True
         raise RuntimeError(f"oracle did not terminate episode {episode_id} within {args.max_steps} steps")
     except OracleActionError as exc:
         raise RuntimeError(f"failed to collect oracle label for episode {episode_id}: {exc}") from exc
@@ -166,6 +175,22 @@ def _save_frame(rgb: Any, frames_dir: Path, frame_index: int) -> str:
 
 def _append_capped(values: Sequence[str], value: str, limit: int) -> list[str]:
     return list((tuple(values) + (value,))[-limit:])
+
+
+def _task_success_distance(env: Any, fallback: float) -> float:
+    """Use the task's actual success threshold for oracle STOP labels."""
+
+    value: Any = getattr(env, "config", None)
+    for key in ("habitat", "task", "measurements", "success", "success_distance"):
+        if value is None:
+            break
+        if isinstance(value, dict):
+            value = value.get(key)
+        else:
+            value = getattr(value, key, None)
+    if value is None:
+        return fallback
+    return float(value)
 
 
 if __name__ == "__main__":

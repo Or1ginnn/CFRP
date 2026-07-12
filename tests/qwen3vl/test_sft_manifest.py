@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from scripts.train_qwen3vl_stage1_sft import _messages_with_processor_image_paths
+from vlnce_server.qwen3vl.llamafactory_data import make_llamafactory_stage1_example
 from vlnce_server.qwen3vl.sft_data import SFT_SCHEMA
 from vlnce_server.qwen3vl.sft_manifest import (
     load_stage1_sft_jsonl,
@@ -66,6 +67,16 @@ def test_training_messages_normalize_file_uri_without_mutating_manifest():
 
     assert normalized[1]["content"][0]["image"] == "/tmp/frame.png"
     assert messages[1]["content"][0]["image"] == "file:///tmp/frame.png"
+
+
+def test_llamafactory_export_preserves_target_and_image_order():
+    source = example()
+
+    converted = make_llamafactory_stage1_example(source)
+
+    assert converted["conversations"][1]["value"] == source["target_xml"]
+    assert converted["images"] == ["/tmp/frame.png"]
+    assert converted["conversations"][0]["value"].count("<image>") == 1
 
 
 def test_sft_dry_run_executes_main_and_writes_manifest(tmp_path: Path):

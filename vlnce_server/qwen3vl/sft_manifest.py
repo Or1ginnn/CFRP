@@ -62,18 +62,33 @@ def validate_stage1_sft_example(example: Mapping[str, Any], *, check_images: boo
         raise ValueError("images must match user image blocks in order")
     if check_images:
         for image_uri in images:
-            image_path = local_file_uri(image_uri)
+            image_path = local_image_path(image_uri)
             if not image_path.is_file():
                 raise ValueError(f"image file is missing: {image_path}")
 
 
+def local_image_path(source: str) -> Path:
+    """Resolve a local path or ``file://`` URI for model-runtime media loading."""
+
+    if not isinstance(source, str) or not source:
+        raise ValueError("Stage 1 SFT image source must be a non-empty string")
+    parsed = urlparse(source)
+    if parsed.scheme == "file":
+        if parsed.netloc not in ("", "localhost"):
+            raise ValueError(f"Stage 1 SFT image must be local: {source!r}")
+        return Path(unquote(parsed.path))
+    if parsed.scheme:
+        raise ValueError(f"Stage 1 SFT image must be a local path or file URI: {source!r}")
+    return Path(source)
+
+
 def local_file_uri(uri: str) -> Path:
-    """Resolve a portable local ``file://`` URI without accepting remote media."""
+    """Backward-compatible strict ``file://`` resolver."""
 
     parsed = urlparse(uri)
-    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+    if parsed.scheme != "file":
         raise ValueError(f"Stage 1 SFT image must be a local file URI: {uri!r}")
-    return Path(unquote(parsed.path))
+    return local_image_path(uri)
 
 
 def iter_stage1_sft_examples(paths: Iterable[str | Path]) -> Iterable[dict[str, Any]]:

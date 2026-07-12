@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl
+from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl, local_image_path
 from vlnce_server.qwen3vl.stage1 import DEFAULT_QWEN3_VL_MODEL
 
 
@@ -114,7 +114,7 @@ def main() -> int:
 def _supervised_inputs(processor: Any, example: dict[str, Any], device: Any) -> tuple[Any, Any]:
     """Mask every prompt token and supervise only the terminal XML response."""
 
-    messages = example["messages"]
+    messages = _messages_with_processor_image_paths(example["messages"])
     prompt = processor.apply_chat_template(
         messages[:-1], tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
     )
@@ -133,6 +133,25 @@ def _supervised_inputs(processor: Any, example: dict[str, Any], device: Any) -> 
 
 def torch_equal_prefix(full_ids: Any, prompt_ids: Any) -> bool:
     return bool((full_ids[:, : prompt_ids.shape[1]] == prompt_ids).all().item())
+
+
+def _messages_with_processor_image_paths(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert portable file URIs to paths accepted by the Qwen processor."""
+
+    normalized = []
+    for message in messages:
+        content = message["content"]
+        if not isinstance(content, list):
+            normalized.append(dict(message))
+            continue
+        blocks = []
+        for block in content:
+            copied = dict(block)
+            if copied.get("type") == "image":
+                copied["image"] = str(local_image_path(copied["image"]))
+            blocks.append(copied)
+        normalized.append({**message, "content": blocks})
+    return normalized
 
 
 def _write_run_manifest(output_dir: Path, args: argparse.Namespace, examples: list[dict[str, Any]], *, status: str, optimizer_steps: int = 0) -> None:

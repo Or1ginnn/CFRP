@@ -48,6 +48,7 @@ from .rollout_exchange import (
     write_request,
     write_response,
 )
+from .warmup_audit import audit_sft_alignment, audit_stage1_warmup
 
 __all__ = [
     "CFRPController",
@@ -79,6 +80,8 @@ __all__ = [
     "Stage1RolloutResponse",
     "TrajectoryPrefix",
     "apply_plan_update",
+    "audit_sft_alignment",
+    "audit_stage1_warmup",
     "advance_turn_indices",
     "capture_cfrp_checkpoint",
     "make_trajectory_prefix",

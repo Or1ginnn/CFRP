@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model-python", required=True, help="Python executable in cfrp-qwen3vl")
     parser.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
+    parser.add_argument("--adapter", default=None, help="Optional PEFT LoRA adapter directory")
     parser.add_argument("--split", default="val_seen")
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--seed", type=int, default=123)
@@ -98,6 +99,7 @@ def main() -> int:
                 "max_action_history": args.max_action_history,
                 "success_distance": args.success_distance,
                 "model": args.model,
+                "adapter": args.adapter,
             },
             "repetitions": repetitions,
             "repeatability": compare_repetitions(repetitions),
@@ -273,16 +275,7 @@ def compare_repetitions(repetitions: Sequence[dict[str, Any]]) -> dict[str, Any]
 
 def _start_worker(args: argparse.Namespace, exchange_dir: Path, run_dir: Path) -> subprocess.Popen:
     worker_script = ROOT / "scripts" / "qwen3vl_stage1_file_worker.py"
-    command = [
-        args.model_python,
-        str(worker_script),
-        "--exchange-dir",
-        str(exchange_dir),
-        "--model",
-        args.model,
-        "--max-new-tokens",
-        str(args.max_new_tokens),
-    ]
+    command = _worker_command(args, exchange_dir, worker_script)
     environment = os.environ.copy()
     environment["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
     stdout = (run_dir / "qwen_worker.stdout.log").open("w", encoding="utf-8")
@@ -292,6 +285,21 @@ def _start_worker(args: argparse.Namespace, exchange_dir: Path, run_dir: Path) -
     finally:
         stdout.close()
         stderr.close()
+
+
+def _worker_command(args: argparse.Namespace, exchange_dir: Path, worker_script: Path) -> list[str]:
+    command = [
+        args.model_python,
+        str(worker_script),
+        "--exchange-dir",
+        str(exchange_dir),
+        "--model",
+        args.model,
+    ]
+    if args.adapter is not None:
+        command.extend(("--adapter", args.adapter))
+    command.extend(("--max-new-tokens", str(args.max_new_tokens)))
+    return command
 
 
 def _stop_worker(worker: subprocess.Popen, exchange_dir: Path) -> None:

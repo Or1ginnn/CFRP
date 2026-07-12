@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exchange-dir", required=True)
     parser.add_argument("--model", default=DEFAULT_QWEN3_VL_MODEL)
+    parser.add_argument("--adapter", default=None, help="Optional PEFT LoRA adapter directory")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--poll-seconds", type=float, default=0.1)
     parser.add_argument("--max-requests", type=int, default=None)
@@ -29,6 +30,7 @@ def main() -> int:
         args.exchange_dir,
         model_name_or_path=args.model,
         max_new_tokens=args.max_new_tokens,
+        adapter_path=args.adapter,
         poll_seconds=args.poll_seconds,
         max_requests=args.max_requests,
     )

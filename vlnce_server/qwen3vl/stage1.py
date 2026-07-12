@@ -98,6 +98,7 @@ class Qwen3VLStage1Policy:
         device_map: str = "auto",
         max_new_tokens: int = 128,
         model_kwargs: Optional[Mapping[str, Any]] = None,
+        adapter_path: Optional[str] = None,
     ) -> "Qwen3VLStage1Policy":
         """Load Qwen3-VL only in the dedicated Python 3.10 model environment."""
 
@@ -114,6 +115,14 @@ class Qwen3VLStage1Policy:
         load_kwargs.setdefault("dtype", torch.bfloat16)
         load_kwargs.setdefault("device_map", device_map)
         model = AutoModelForImageTextToText.from_pretrained(model_name_or_path, **load_kwargs)
+        if adapter_path is not None:
+            try:
+                from peft import PeftModel
+            except ImportError as exc:
+                raise Qwen3VLDependencyError(
+                    "Loading a Qwen3-VL LoRA adapter requires peft in the model environment."
+                ) from exc
+            model = PeftModel.from_pretrained(model, adapter_path)
         processor = AutoProcessor.from_pretrained(model_name_or_path)
         return cls(
             model=model,

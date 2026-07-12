@@ -20,6 +20,7 @@ def run_file_worker(
     *,
     model_name_or_path: str,
     max_new_tokens: int,
+    adapter_path: str | None = None,
     poll_seconds: float = 0.1,
     max_requests: int | None = None,
 ) -> int:
@@ -30,6 +31,7 @@ def run_file_worker(
     policy = Qwen3VLStage1Policy.from_pretrained(
         model_name_or_path,
         max_new_tokens=max_new_tokens,
+        adapter_path=adapter_path,
     )
     handled = 0
     next_request_id = 0

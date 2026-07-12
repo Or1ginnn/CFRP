@@ -136,6 +136,7 @@ def run_episode(
         split=args.split,
         episode_id=episode_id,
         seed=args.seed,
+        success_distance=args.success_distance,
     )
     wrapper = Habitat030NavigationEnvironment(env)
     episode_dir = run_dir / f"repeat-{repeat_index:02d}" / f"episode-{episode_id}"

@@ -38,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--oracle-goal-radius",
         type=float,
-        default=0.2,
-        help="Conservative maximum radius for oracle STOP; Habitat success remains the hard check.",
+        default=None,
+        help="Optional stricter oracle STOP radius; defaults to the configured R2R success distance.",
     )
     return parser.parse_args()
 
@@ -104,6 +104,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
         split=args.split,
         episode_id=episode_id,
         seed=args.seed,
+        success_distance=args.success_distance,
     )
     wrapper = Habitat030NavigationEnvironment(env)
     episode_dir = output_dir / f"episode-{episode_id}"
@@ -113,7 +114,11 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
         history = FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history).reset(observation)
         frame_paths = [_save_frame(observation.rgb, frames_dir, 0)]
         task_success_distance = _task_success_distance(env, args.success_distance)
-        follower_goal_radius = min(task_success_distance, args.oracle_goal_radius)
+        follower_goal_radius = (
+            task_success_distance
+            if args.oracle_goal_radius is None
+            else min(task_success_distance, args.oracle_goal_radius)
+        )
         follower = ShortestPathFollower(
             sim=env.sim,
             goal_radius=follower_goal_radius,

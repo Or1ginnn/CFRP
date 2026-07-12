@@ -15,6 +15,7 @@ def create_r2r_habitat_env(
     split: str = "val_seen",
     episode_id: Optional[str] = None,
     seed: Optional[int] = None,
+    success_distance: float = 3.0,
 ) -> Tuple[object, R2REpisodeRecord]:
     import habitat
     from habitat.config.default import get_config
@@ -38,6 +39,11 @@ def create_r2r_habitat_env(
     ]
     if seed is not None:
         overrides.append(f"habitat.seed={seed}")
+    if success_distance <= 0:
+        raise ValueError("success_distance must be positive")
+    # R2R-CE/RxR-CE use a 3m navigation success threshold.  The PointNav
+    # smoke config otherwise carries its own, different default.
+    overrides.append(f"habitat.task.measurements.success.success_distance={success_distance}")
     config = get_config(
         str(config_path),
         overrides=overrides,

@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--dataset-name", default="cfrp_stage1")
     parser.add_argument("--lora-output-dir", required=True)
+    parser.add_argument("--run-name", default="cfrp-stage1-lora")
     return parser.parse_args()
 
 
@@ -34,7 +35,13 @@ def main() -> int:
         for example in examples:
             handle.write(json.dumps(make_llamafactory_stage1_example(example), ensure_ascii=False) + "\n")
     _write_json(output_dir / "dataset_info.json", _dataset_info(args.dataset_name, data_file.name))
-    _write_train_config(output_dir / "train_lora.yaml", output_dir, args.dataset_name, Path(args.lora_output_dir))
+    _write_train_config(
+        output_dir / "train_lora.yaml",
+        output_dir,
+        args.dataset_name,
+        Path(args.lora_output_dir),
+        args.run_name,
+    )
     _write_json(
         output_dir / "manifest.json",
         {
@@ -61,7 +68,13 @@ def _dataset_info(dataset_name: str, data_file_name: str) -> dict:
     }
 
 
-def _write_train_config(path: Path, dataset_dir: Path, dataset_name: str, lora_output_dir: Path) -> None:
+def _write_train_config(
+    path: Path,
+    dataset_dir: Path,
+    dataset_name: str,
+    lora_output_dir: Path,
+    run_name: str,
+) -> None:
     # The no-thinking template prevents the SFT target from gaining an empty
     # CoT; CFRP supervises only its normal action XML.
     lines = [
@@ -92,7 +105,8 @@ def _write_train_config(path: Path, dataset_dir: Path, dataset_name: str, lora_o
         "save_steps: 500",
         "plot_loss: true",
         "overwrite_output_dir: false",
-        "report_to: none",
+        "report_to: wandb",
+        f"run_name: {run_name}",
         "",
         "### train",
         "per_device_train_batch_size: 1",

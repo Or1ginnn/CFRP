@@ -171,6 +171,13 @@ def test_history_windows_are_capped():
     assert max(step.history_action_count for step in runner.trajectory) == 8
 
 
+def test_default_history_window_matches_stage1_plan():
+    history = FixedHistoryBuffer.create()
+
+    assert history.max_visual == 6
+    assert history.max_action == 8
+
+
 def test_history_contains_no_privileged_fields():
     runner = Stage1EpisodeRunner(FakeWrapper(), plan())
 

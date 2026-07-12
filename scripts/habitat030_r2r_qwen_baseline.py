@@ -26,7 +26,12 @@ from vlnce_server.cfrp import (
 )
 from vlnce_server.habitat030 import Habitat030NavigationEnvironment
 from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
-from vlnce_server.habitat030.stage1_runner import FixedHistoryBuffer, Stage1EpisodeRunner
+from vlnce_server.habitat030.stage1_runner import (
+    DEFAULT_MAX_ACTION_HISTORY,
+    DEFAULT_MAX_VISUAL_HISTORY,
+    FixedHistoryBuffer,
+    Stage1EpisodeRunner,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,8 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max-steps", type=int, default=30)
-    parser.add_argument("--max-visual-history", type=int, default=4)
-    parser.add_argument("--max-action-history", type=int, default=3)
+    parser.add_argument("--max-visual-history", type=int, default=DEFAULT_MAX_VISUAL_HISTORY)
+    parser.add_argument("--max-action-history", type=int, default=DEFAULT_MAX_ACTION_HISTORY)
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--response-timeout", type=float, default=600.0)
     parser.add_argument("--success-distance", type=float, default=3.0)

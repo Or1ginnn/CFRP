@@ -14,17 +14,25 @@ from vlnce_server.cfrp import (
 from .records import NavigationMetrics, NavigationObservation
 
 
+DEFAULT_MAX_VISUAL_HISTORY = 6
+DEFAULT_MAX_ACTION_HISTORY = 8
+
+
 @dataclass(frozen=True)
 class FixedHistoryBuffer:
     """Model-visible fixed-window observation/action history."""
 
     visual_history: Tuple[NavigationObservation, ...] = tuple()
     action_history: Tuple[str, ...] = tuple()
-    max_visual: int = 6
-    max_action: int = 8
+    max_visual: int = DEFAULT_MAX_VISUAL_HISTORY
+    max_action: int = DEFAULT_MAX_ACTION_HISTORY
 
     @classmethod
-    def create(cls, max_visual: int = 6, max_action: int = 8) -> "FixedHistoryBuffer":
+    def create(
+        cls,
+        max_visual: int = DEFAULT_MAX_VISUAL_HISTORY,
+        max_action: int = DEFAULT_MAX_ACTION_HISTORY,
+    ) -> "FixedHistoryBuffer":
         if max_visual < 1:
             raise ValueError("max_visual must be at least 1")
         if max_action < 1:

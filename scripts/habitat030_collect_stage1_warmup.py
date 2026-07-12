@@ -24,7 +24,11 @@ from vlnce_server.habitat030 import (
 )
 from vlnce_server.habitat030.r2r_dataset import load_r2r_dataset
 from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
-from vlnce_server.habitat030.stage1_runner import FixedHistoryBuffer
+from vlnce_server.habitat030.stage1_runner import (
+    DEFAULT_MAX_ACTION_HISTORY,
+    DEFAULT_MAX_VISUAL_HISTORY,
+    FixedHistoryBuffer,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,8 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="train")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max-steps", type=int, default=160)
-    parser.add_argument("--max-visual-history", type=int, default=4)
-    parser.add_argument("--max-action-history", type=int, default=3)
+    parser.add_argument("--max-visual-history", type=int, default=DEFAULT_MAX_VISUAL_HISTORY)
+    parser.add_argument("--max-action-history", type=int, default=DEFAULT_MAX_ACTION_HISTORY)
     parser.add_argument("--success-distance", type=float, default=3.0)
     parser.add_argument(
         "--oracle-goal-radius",

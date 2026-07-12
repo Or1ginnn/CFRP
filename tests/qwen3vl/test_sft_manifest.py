@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -44,3 +46,29 @@ def test_load_manifest_reports_line_number(tmp_path: Path):
 
 def test_local_file_uri_decodes_paths():
     assert str(local_file_uri("file:///tmp/a%20frame.png")) == "/tmp/a frame.png"
+
+
+def test_sft_dry_run_executes_main_and_writes_manifest(tmp_path: Path):
+    source = tmp_path / "samples.jsonl"
+    output_dir = tmp_path / "dry-run"
+    source.write_text(json.dumps(example()) + "\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_qwen3vl_stage1_sft.py",
+            "--train-jsonl",
+            str(source),
+            "--output-dir",
+            str(output_dir),
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "qwen3vl_stage1_sft_dry_run: OK" in completed.stdout
+    payload = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "dry_run"
+    assert payload["examples"] == 1

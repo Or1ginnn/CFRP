@@ -155,3 +155,7 @@ def _write_run_manifest(output_dir: Path, args: argparse.Namespace, examples: li
         + "\n",
         encoding="utf-8",
     )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

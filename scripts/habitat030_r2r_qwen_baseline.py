@@ -17,9 +17,8 @@ if str(ROOT) not in sys.path:
 
 from vlnce_server.cfrp import (
     CFRPProtocolError,
-    PlanPoint,
-    PlanState,
     Stage1RolloutRequest,
+    initialize_plan_from_instruction,
     request_path,
     response_path,
     wait_for_response,
@@ -50,18 +49,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--success-distance", type=float, default=3.0)
     parser.add_argument("--cuda-visible-devices", default="0,1")
     return parser.parse_args()
-
-
-def initial_plan(instruction: str) -> PlanState:
-    """A deterministic placeholder plan until the learned/base planner is added."""
-
-    return PlanState(
-        global_goal=instruction,
-        points=(
-            PlanPoint(id="p1", status="current", text="follow the instruction from the current view"),
-            PlanPoint(id="p2", status="todo", text="continue toward the described destination"),
-        ),
-    )
 
 
 def main() -> int:
@@ -144,7 +131,7 @@ def run_episode(
     try:
         runner = Stage1EpisodeRunner(
             wrapper,
-            initial_plan(record.instruction_text),
+            initialize_plan_from_instruction(record.instruction_text),
             history=FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history),
         )
         runner.reset()

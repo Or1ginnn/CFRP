@@ -12,7 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from vlnce_server.cfrp import PlanPoint, PlanState, Stage1RolloutRequest
+from vlnce_server.cfrp import (
+    Stage1RolloutRequest,
+    advance_turn_indices,
+    initialize_plan_from_instruction,
+)
 from vlnce_server.habitat030 import (
     Habitat030NavigationEnvironment,
     OracleActionError,
@@ -44,19 +48,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def initial_plan(instruction: str) -> PlanState:
-    return PlanState(
-        global_goal=instruction,
-        points=(
-            PlanPoint(id="p1", status="current", text="follow the instruction from the current view"),
-            PlanPoint(id="p2", status="todo", text="continue toward the described destination"),
-        ),
-    )
-
-
-def target_xml(action: str) -> str:
-    subgoal = "stop at the destination" if action == "STOP" else "follow the instruction from the current view"
-    return f"<progress>hold</progress><subgoal>{subgoal}</subgoal><action>{action}</action>"
+def target_xml(progress: str, subgoal: str, action: str) -> str:
+    return f"<progress>{progress}</progress><subgoal>{subgoal}</subgoal><action>{action}</action>"
 
 
 def main() -> int:
@@ -124,25 +117,19 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
             goal_radius=follower_goal_radius,
             return_one_hot=False,
         )
-        records = []
+        raw_steps = []
         for turn_index in range(args.max_steps):
             raw_action = follower.get_next_action(env.current_episode.goals[0].position)
             action = cfrp_action_from_habitat_oracle(raw_action)
-            request = Stage1RolloutRequest(
-                episode_id=episode_id,
-                request_id=turn_index,
-                turn_index=turn_index,
-                instruction=observation.instruction,
-                current_plan=initial_plan(record.instruction_text),
-                visual_history_paths=tuple(frame_paths),
-                action_history=history.action_history,
-                allowed_actions=observation.allowed_actions,
-            )
             oracle_state = wrapper.privileged_state()
-            records.append(
+            raw_steps.append(
                 {
-                    "model_input": request.to_dict(),
-                    "target_xml": target_xml(action),
+                    "turn_index": turn_index,
+                    "instruction": observation.instruction,
+                    "visual_history_paths": tuple(frame_paths),
+                    "action_history": history.action_history,
+                    "allowed_actions": observation.allowed_actions,
+                    "action": action,
                     "oracle_only": {
                         "oracle_action": action,
                         "task_success_distance": task_success_distance,
@@ -170,7 +157,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                         f"follower_goal_radius={follower_goal_radius} "
                         f"distance_to_goal={step.metrics.distance_to_goal}"
                     )
-                return records, True
+                return _label_trajectory(record, raw_steps), True
         raise RuntimeError(f"oracle did not terminate episode {episode_id} within {args.max_steps} steps")
     except OracleActionError as exc:
         raise RuntimeError(f"failed to collect oracle label for episode {episode_id}: {exc}") from exc
@@ -189,6 +176,37 @@ def _save_frame(rgb: Any, frames_dir: Path, frame_index: int) -> str:
 
 def _append_capped(values: Sequence[str], value: str, limit: int) -> list[str]:
     return list((tuple(values) + (value,))[-limit:])
+
+
+def _label_trajectory(record: Any, raw_steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    plan = initialize_plan_from_instruction(record.instruction_text)
+    non_stop_actions = sum(1 for step in raw_steps if step["action"] != "STOP")
+    advance_indices = set(advance_turn_indices(non_stop_actions, plan))
+    records = []
+    for raw_step in raw_steps:
+        turn_index = raw_step["turn_index"]
+        progress = "advance" if turn_index in advance_indices else "hold"
+        current_point = plan.current_points()[0]
+        request = Stage1RolloutRequest(
+            episode_id=record.episode_id,
+            request_id=turn_index,
+            turn_index=turn_index,
+            instruction=raw_step["instruction"],
+            current_plan=plan,
+            visual_history_paths=raw_step["visual_history_paths"],
+            action_history=raw_step["action_history"],
+            allowed_actions=raw_step["allowed_actions"],
+        )
+        records.append(
+            {
+                "model_input": request.to_dict(),
+                "target_xml": target_xml(progress, current_point.text, raw_step["action"]),
+                "oracle_only": raw_step["oracle_only"],
+            }
+        )
+        if progress == "advance":
+            plan = plan.advance_current()
+    return records
 
 
 def _task_success_distance(env: Any, fallback: float) -> float:

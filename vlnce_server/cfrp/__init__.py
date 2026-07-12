@@ -26,6 +26,7 @@ from .checkpoint import (
 )
 from .controller import CFRPController, ControllerStepResult
 from .loop import CFRPLoopTurn, run_scripted_cfrp_loop
+from .plan_initializer import advance_turn_indices, initialize_plan_from_instruction
 from .protocol import (
     CFRPOutput,
     CFRPProtocolError,
@@ -78,9 +79,11 @@ __all__ = [
     "Stage1RolloutResponse",
     "TrajectoryPrefix",
     "apply_plan_update",
+    "advance_turn_indices",
     "capture_cfrp_checkpoint",
     "make_trajectory_prefix",
     "make_navigation_pose",
+    "initialize_plan_from_instruction",
     "parse_cfrp_output",
     "read_request",
     "read_response",

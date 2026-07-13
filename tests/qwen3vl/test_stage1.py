@@ -80,6 +80,7 @@ def test_vllm_client_keeps_a_fixed_request_seed(monkeypatch):
     client.generate_xml(request())
 
     assert b'"seed": 77' in captured["payload"]
+    assert b'"max_pixels": 150528' in captured["payload"]
 
 
 class FakeInputs(dict):

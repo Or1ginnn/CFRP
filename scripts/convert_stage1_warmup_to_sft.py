@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vlnce_server.qwen3vl.sft_data import make_stage1_sft_example
+from vlnce_server.qwen3vl.vision import qwen3vl_image_size, qwen3vl_processor_kwargs
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +47,9 @@ def main() -> int:
                 "schema": "cfrp.qwen3vl.stage1_sft_manifest.v1",
                 "examples": count,
                 "unique_images": len(image_cache),
+                "habitat_rgb_size": [640, 480],
+                "model_image_size": list(qwen3vl_image_size()),
+                "processor_kwargs": qwen3vl_processor_kwargs(),
             },
             indent=2,
         )
@@ -76,7 +80,9 @@ def _export_images(record: dict, images_dir: Path, image_cache: dict[str, str]) 
             digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
             destination = images_dir / f"frame-{digest}.png"
             destination.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(array).save(destination)
+            Image.fromarray(array).convert("RGB").resize(
+                qwen3vl_image_size(), resample=Image.Resampling.LANCZOS
+            ).save(destination)
             image_uri = destination.resolve().as_uri()
             image_cache[source] = image_uri
         image_uris.append(image_uri)

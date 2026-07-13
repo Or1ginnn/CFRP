@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl, local_image_path
 from vlnce_server.qwen3vl.stage1 import DEFAULT_QWEN3_VL_MODEL
+from vlnce_server.qwen3vl.vision import qwen3vl_processor_kwargs
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,7 +64,7 @@ def main() -> int:
         ) from exc
 
     torch.manual_seed(args.seed)
-    processor = AutoProcessor.from_pretrained(args.model)
+    processor = AutoProcessor.from_pretrained(args.model, **qwen3vl_processor_kwargs())
     model = AutoModelForImageTextToText.from_pretrained(
         args.model, dtype=torch.bfloat16, device_map="auto"
     )
@@ -168,6 +169,7 @@ def _write_run_manifest(output_dir: Path, args: argparse.Namespace, examples: li
                 "gradient_accumulation": args.gradient_accumulation,
                 "optimizer_steps": optimizer_steps,
                 "seed": args.seed,
+                "processor_kwargs": qwen3vl_processor_kwargs(),
             },
             indent=2,
         )

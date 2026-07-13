@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .stage1 import Stage1ModelRequest, build_stage1_messages
+from .vision import prepare_qwen3vl_image, qwen3vl_processor_kwargs
 
 
 class VLLMRequestError(RuntimeError):
@@ -47,6 +48,7 @@ class VLLMStage1Client:
             "top_p": 1.0,
             "max_tokens": self.max_new_tokens,
             "seed": self.seed,
+            "mm_processor_kwargs": qwen3vl_processor_kwargs(),
         }
         request = Request(
             self.endpoint,
@@ -78,7 +80,12 @@ def make_openai_messages(stage1_request: Stage1ModelRequest) -> List[Dict[str, A
         if item["type"] == "text":
             content.append({"type": "text", "text": item["text"]})
         elif item["type"] == "image":
-            content.append({"type": "image_url", "image_url": {"url": _png_data_uri(item["image"])}})
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _png_data_uri(prepare_qwen3vl_image(item["image"]))},
+                }
+            )
         else:
             raise ValueError("unsupported Stage 1 content type: {}".format(item["type"]))
     return [system, {"role": "user", "content": content}]

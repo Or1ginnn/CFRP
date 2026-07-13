@@ -3,9 +3,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
+
+from vlnce_server.qwen3vl.vision import HABITAT_RGB_HEIGHT, HABITAT_RGB_HFOV, HABITAT_RGB_WIDTH
 
 from .r2r_dataset import R2REpisodeRecord, load_r2r_episode, make_habitat_dataset
+
+
+def r2r_camera_overrides() -> List[str]:
+    """Return the shared high-resolution R2R camera configuration."""
+
+    return [
+        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.width={}".format(HABITAT_RGB_WIDTH),
+        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.height={}".format(HABITAT_RGB_HEIGHT),
+        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.hfov={}".format(HABITAT_RGB_HFOV),
+        "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.width={}".format(HABITAT_RGB_WIDTH),
+        "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.height={}".format(HABITAT_RGB_HEIGHT),
+    ]
 
 
 def create_r2r_habitat_env(
@@ -33,11 +47,8 @@ def create_r2r_habitat_env(
         f"habitat.dataset.scenes_dir={scenes_dir}",
         f"habitat.dataset.split={split}",
         "habitat.environment.iterator_options.shuffle=False",
-        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.width=128",
-        "habitat.simulator.agents.main_agent.sim_sensors.rgb_sensor.height=128",
-        "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.width=128",
-        "habitat.simulator.agents.main_agent.sim_sensors.depth_sensor.height=128",
     ]
+    overrides.extend(r2r_camera_overrides())
     if seed is not None:
         overrides.append(f"habitat.seed={seed}")
     if success_distance <= 0:

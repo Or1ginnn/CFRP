@@ -13,6 +13,8 @@ from typing import Any, Mapping, Optional, Tuple
 from vlnce_server.cfrp import PlanState
 from vlnce_server.cfrp.prompts import STAGE1_SYSTEM_PROMPT
 
+from .vision import prepare_qwen3vl_image, qwen3vl_processor_kwargs
+
 
 DEFAULT_QWEN3_VL_MODEL = "Qwen/Qwen3-VL-4B-Instruct"
 
@@ -62,7 +64,7 @@ def build_stage1_messages(request: Stage1ModelRequest) -> list[dict[str, Any]]:
                 "text": f"Observation frame {index} of {len(request.visual_history)} (oldest to newest):",
             }
         )
-        content.append({"type": "image", "image": rgb})
+        content.append({"type": "image", "image": prepare_qwen3vl_image(rgb)})
 
     return [
         {"role": "system", "content": STAGE1_SYSTEM_PROMPT},
@@ -123,7 +125,7 @@ class Qwen3VLStage1Policy:
                     "Loading a Qwen3-VL LoRA adapter requires peft in the model environment."
                 ) from exc
             model = PeftModel.from_pretrained(model, adapter_path)
-        processor = AutoProcessor.from_pretrained(model_name_or_path)
+        processor = AutoProcessor.from_pretrained(model_name_or_path, **qwen3vl_processor_kwargs())
         return cls(
             model=model,
             processor=processor,

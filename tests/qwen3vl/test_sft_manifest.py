@@ -83,9 +83,19 @@ def test_llamafactory_export_preserves_target_and_image_order():
 
 def test_warmup_image_export_reuses_identical_source_frame(tmp_path: Path, monkeypatch):
     class FakeImage:
+        class Resampling:
+            LANCZOS = "lanczos"
+
         @staticmethod
         def fromarray(_array):
             return FakeImage()
+
+        def convert(self, _mode):
+            return self
+
+        def resize(self, _size, resample):
+            assert resample == FakeImage.Resampling.LANCZOS
+            return self
 
         def save(self, path):
             Path(path).write_bytes(b"fake-png")

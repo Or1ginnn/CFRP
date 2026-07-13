@@ -61,6 +61,8 @@ class EvaluationJob:
     vllm_model: str
     max_new_tokens: int
     response_timeout: float
+    save_frames: bool
+    save_oracle_trace: bool
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,6 +84,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--response-timeout", type=float, default=600.0)
     parser.add_argument("--success-distance", type=float, default=3.0)
+    parser.add_argument("--save-frames", action="store_true", help="Persist RGB frames only for selected replay episodes")
+    parser.add_argument("--save-oracle-trace", action="store_true", help="Persist privileged debug state in trajectories")
     return parser.parse_args()
 
 
@@ -118,6 +122,8 @@ def main() -> int:
             "success_distance": args.success_distance,
             "vllm_base_url": args.vllm_base_url,
             "vllm_model": args.vllm_model,
+            "save_frames": args.save_frames,
+            "save_oracle_trace": args.save_oracle_trace,
         },
         "repetitions": repetitions,
         "repeatability": compare_repetitions(repetitions) if args.repeat > 1 else {"repeatable": None},
@@ -148,6 +154,8 @@ def _make_job(args: argparse.Namespace, run_dir: Path, episode_id: str, repeat_i
         vllm_model=args.vllm_model,
         max_new_tokens=args.max_new_tokens,
         response_timeout=args.response_timeout,
+        save_frames=args.save_frames,
+        save_oracle_trace=args.save_oracle_trace,
     )
 
 
@@ -188,7 +196,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
             history=FixedHistoryBuffer.create(job.max_visual_history, job.max_action_history),
         )
         runner.reset()
-        frame_paths = [_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0)]
+        frame_paths = _initial_frame_paths(runner, frames_dir, job.save_frames)
         steps: List[Dict[str, Any]] = []
         minimum_distance = _distance(wrapper.metrics())
         end_reason = "max_steps"
@@ -204,7 +212,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 steps.append({"turn_index": turn_index, "model_error": "{}: {}".format(type(exc).__name__, exc)})
                 break
             minimum_distance = _minimum(minimum_distance, _distance(step.metrics))
-            steps.append({
+            step_record = {
                 "turn_index": turn_index,
                 "raw_xml": step.raw_xml,
                 "progress": step.progress,
@@ -214,13 +222,16 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 "plan_xml": step.plan_xml,
                 "history": {"visual_count": step.history_visual_count, "action_count": step.history_action_count, "rgb_paths": list(frame_paths)},
                 "metrics": _metrics_to_dict(step.metrics),
-                "oracle_only": _oracle_to_dict(wrapper.privileged_state()),
-            })
-            frame_paths = _append_capped(
-                frame_paths,
-                _save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1),
-                job.max_visual_history,
-            )
+            }
+            if job.save_oracle_trace:
+                step_record["oracle_only"] = _oracle_to_dict(wrapper.privileged_state())
+            steps.append(step_record)
+            if job.save_frames:
+                frame_paths = _append_capped(
+                    frame_paths,
+                    _save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1),
+                    job.max_visual_history,
+                )
             if step.episode_over or step.action == "STOP":
                 end_reason = "stop"
                 break
@@ -242,6 +253,12 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         return job.repeat_index, job.episode_id, result
     finally:
         wrapper.close()
+
+
+def _initial_frame_paths(runner: Stage1EpisodeRunner, frames_dir: Path, save_frames: bool) -> List[str]:
+    if not save_frames:
+        return []
+    return [_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0)]
 
 
 if __name__ == "__main__":

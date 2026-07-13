@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples-per-outcome", type=int, default=3)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--frame-duration-ms", type=int, default=250)
+    parser.add_argument("--select-only", action="store_true", help="Write a reproducible episode selection manifest without rendering")
     return parser.parse_args()
 
 
@@ -31,6 +32,9 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=False)
     rendered: dict[str, list[dict[str, Any]]] = {"success": [], "failure": []}
     for outcome, items in selected.items():
+        if args.select_only:
+            rendered[outcome] = [{"episode_id": episode["episode_id"]} for episode in items]
+            continue
         outcome_dir = output_dir / outcome
         for index, episode in enumerate(items, start=1):
             destination = outcome_dir / f"{index:02d}_episode-{episode['episode_id']}.gif"
@@ -46,7 +50,15 @@ def main() -> int:
                 }
             )
     (output_dir / "video_selection.json").write_text(
-        json.dumps({"schema": "cfrp.phase0.video_selection.v1", "seed": args.seed, "rendered": rendered}, indent=2)
+        json.dumps(
+            {
+                "schema": "cfrp.phase0.video_selection.v1",
+                "seed": args.seed,
+                "select_only": args.select_only,
+                "rendered": rendered,
+            },
+            indent=2,
+        )
         + "\n",
         encoding="utf-8",
     )

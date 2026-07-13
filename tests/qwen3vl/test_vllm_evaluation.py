@@ -8,6 +8,7 @@ def test_vllm_evaluation_job_preserves_batch_runtime_configuration(tmp_path):
         dataset_root="/data/r2r", scenes_dir="/data/scenes", config="/config.yaml", split="val_seen", seed=123,
         max_steps=160, max_visual_history=6, max_action_history=8, success_distance=3.0,
         vllm_base_url="http://127.0.0.1:8000", vllm_model="cfrp-stage1", max_new_tokens=128, response_timeout=600.0,
+        save_frames=False, save_oracle_trace=False,
     )
 
     job = _make_job(args, tmp_path, "7", 1)
@@ -16,3 +17,4 @@ def test_vllm_evaluation_job_preserves_batch_runtime_configuration(tmp_path):
     assert job.repeat_index == 1
     assert job.max_visual_history == 6
     assert job.vllm_model == "cfrp-stage1"
+    assert job.save_frames is False

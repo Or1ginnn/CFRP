@@ -51,8 +51,23 @@ def create_r2r_habitat_env(
     )
     if include_top_down_map:
         from habitat.config import read_write
-        from habitat.config.default_structured_configs import TopDownMapMeasurementConfig
+        from habitat.config.default_structured_configs import (
+            CollisionsMeasurementConfig,
+            FogOfWarConfig,
+            TopDownMapMeasurementConfig,
+        )
 
         with read_write(config):
-            config.habitat.task.measurements.top_down_map = TopDownMapMeasurementConfig()
+            config.habitat.task.measurements.top_down_map = TopDownMapMeasurementConfig(
+                map_padding=3,
+                map_resolution=1024,
+                draw_source=True,
+                draw_border=True,
+                draw_shortest_path=True,
+                draw_view_points=True,
+                draw_goal_positions=True,
+                draw_goal_aabbs=True,
+                fog_of_war=FogOfWarConfig(draw=True, visibility_dist=5.0, fov=90),
+            )
+            config.habitat.task.measurements.collisions = CollisionsMeasurementConfig()
     return habitat.Env(config=config, dataset=dataset), record

@@ -82,6 +82,10 @@ class Habitat030NavigationEnvironment:
             extra=tuple(extra),
         )
 
+    def raw_metrics(self) -> Mapping[str, Any]:
+        """Return logging-only Habitat measurements; never use these as model input."""
+        return _as_mapping(self.env.get_metrics() or {})
+
     def agent_pose(self) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
         state = self.env.sim.get_agent_state()
         return (_to_float_tuple(state.position), _rotation_to_tuple(state.rotation))

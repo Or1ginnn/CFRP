@@ -16,6 +16,7 @@ def create_r2r_habitat_env(
     episode_id: Optional[str] = None,
     seed: Optional[int] = None,
     success_distance: float = 3.0,
+    include_top_down_map: bool = False,
 ) -> Tuple[object, R2REpisodeRecord]:
     import habitat
     from habitat.config.default import get_config
@@ -48,4 +49,10 @@ def create_r2r_habitat_env(
         str(config_path),
         overrides=overrides,
     )
+    if include_top_down_map:
+        from habitat.config import read_write
+        from habitat.config.default_structured_configs import TopDownMapMeasurementConfig
+
+        with read_write(config):
+            config.habitat.task.measurements.top_down_map = TopDownMapMeasurementConfig()
     return habitat.Env(config=config, dataset=dataset), record

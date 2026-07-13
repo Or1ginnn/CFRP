@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vlnce_server.cfrp import PlanPoint, PlanState
-from vlnce_server.qwen3vl import Qwen3VLStage1Policy, Stage1ModelRequest, build_stage1_messages, make_openai_messages
+from vlnce_server.qwen3vl import Qwen3VLStage1Policy, Stage1ModelRequest, VLLMStage1Client, build_stage1_messages, make_openai_messages
 
 
 def plan() -> PlanState:
@@ -53,6 +53,33 @@ def test_vllm_messages_preserve_text_and_image_order(monkeypatch):
     assert messages[0]["role"] == "system"
     assert [item["type"] for item in messages[1]["content"]] == ["text", "text", "image_url", "text", "image_url"]
     assert messages[1]["content"][2]["image_url"]["url"] == "data:rgb-oldest"
+
+
+def test_vllm_client_keeps_a_fixed_request_seed(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"choices": [{"message": {"content": "<action>STOP</action>"}}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(http_request, timeout):
+        captured["payload"] = http_request.data
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("vlnce_server.qwen3vl.vllm_client.urlopen", fake_urlopen)
+    monkeypatch.setattr("vlnce_server.qwen3vl.vllm_client.make_openai_messages", lambda _request: [])
+    client = VLLMStage1Client("http://127.0.0.1:8000", "cfrp-stage1", seed=77)
+
+    client.generate_xml(request())
+
+    assert b'"seed": 77' in captured["payload"]
 
 
 class FakeInputs(dict):

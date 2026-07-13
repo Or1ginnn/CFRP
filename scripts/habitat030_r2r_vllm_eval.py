@@ -172,7 +172,13 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         success_distance=job.success_distance,
     )
     wrapper = Habitat030NavigationEnvironment(env)
-    client = VLLMStage1Client(job.vllm_base_url, job.vllm_model, job.max_new_tokens, job.response_timeout)
+    client = VLLMStage1Client(
+        job.vllm_base_url,
+        job.vllm_model,
+        job.max_new_tokens,
+        job.response_timeout,
+        job.seed,
+    )
     episode_dir = Path(job.run_dir) / "repeat-{:02d}".format(job.repeat_index) / "episode-{}".format(job.episode_id)
     frames_dir = episode_dir / "frames"
     try:

@@ -23,13 +23,21 @@ class VLLMRequestError(RuntimeError):
 class VLLMStage1Client:
     """Submit one Stage 1 request to a continuously-batching vLLM server."""
 
-    def __init__(self, base_url: str, model: str, max_new_tokens: int = 128, timeout_seconds: float = 600.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        max_new_tokens: int = 128,
+        timeout_seconds: float = 600.0,
+        seed: int = 123,
+    ) -> None:
         if max_new_tokens < 1:
             raise ValueError("max_new_tokens must be at least 1")
         self.endpoint = base_url.rstrip("/") + "/v1/chat/completions"
         self.model = model
         self.max_new_tokens = max_new_tokens
         self.timeout_seconds = timeout_seconds
+        self.seed = seed
 
     def generate_xml(self, stage1_request: Stage1ModelRequest) -> str:
         payload = {
@@ -38,6 +46,7 @@ class VLLMStage1Client:
             "temperature": 0.0,
             "top_p": 1.0,
             "max_tokens": self.max_new_tokens,
+            "seed": self.seed,
         }
         request = Request(
             self.endpoint,

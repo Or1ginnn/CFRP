@@ -11,11 +11,11 @@ HABITAT_RGB_WIDTH = 640
 HABITAT_RGB_HEIGHT = 480
 HABITAT_RGB_HFOV = 90
 
-# Qwen3-VL resizes to multiples of its 32px visual merge unit.  448x336 keeps
-# the original 4:3 camera geometry while spending almost the same pixel budget
-# as InternNav's 384x384 square input.
-QWEN3_VL_IMAGE_WIDTH = 448
-QWEN3_VL_IMAGE_HEIGHT = 336
+# Qwen3-VL resizes to multiples of its 32px visual merge unit.  384x288 is an
+# exact 4:3 camera frame whose two sides are both aligned, so Qwen does not
+# silently distort it during its own smart-resize step.
+QWEN3_VL_IMAGE_WIDTH = 384
+QWEN3_VL_IMAGE_HEIGHT = 288
 QWEN3_VL_MIN_PIXELS = 65_536
 QWEN3_VL_MAX_PIXELS = QWEN3_VL_IMAGE_WIDTH * QWEN3_VL_IMAGE_HEIGHT
 

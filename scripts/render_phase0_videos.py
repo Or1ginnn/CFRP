@@ -1,4 +1,4 @@
-"""Render deterministic success/failure GIF clips from a Phase 0 evaluation run."""
+"""Render deterministic success/failure video clips from a Phase 0 evaluation run."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--frame-duration-ms", type=int, default=250)
+    parser.add_argument("--video-format", choices=("mp4", "gif"), default="mp4")
     parser.add_argument("--select-only", action="store_true", help="Write a reproducible episode selection manifest without rendering")
     return parser.parse_args()
 
@@ -46,11 +47,11 @@ def main() -> int:
             continue
         outcome_dir = output_dir / outcome
         for index, episode in enumerate(items, start=1):
-            destination = outcome_dir / f"{index:02d}_episode-{episode['episode_id']}.gif"
+            destination = outcome_dir / f"{index:02d}_episode-{episode['episode_id']}.{args.video_format}"
             frame_paths = episode_frame_paths(episode)
             if not frame_paths:
                 continue
-            render_gif(frame_paths, destination, args.frame_duration_ms)
+            render_video(frame_paths, destination, args.frame_duration_ms, args.video_format)
             rendered[outcome].append(
                 {
                     "episode_id": episode["episode_id"],
@@ -117,7 +118,7 @@ def episode_frame_paths(episode: dict[str, Any]) -> list[str]:
     return paths
 
 
-def render_gif(frame_paths: list[str], destination: Path, duration_ms: int) -> None:
+def render_video(frame_paths: list[str], destination: Path, duration_ms: int, video_format: str) -> None:
     try:
         import numpy as np
         from PIL import Image
@@ -127,7 +128,15 @@ def render_gif(frame_paths: list[str], destination: Path, duration_ms: int) -> N
     if not frames:
         raise ValueError("cannot render an empty frame sequence")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(destination, save_all=True, append_images=frames[1:], duration=duration_ms, loop=0)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if video_format == "gif":
+        frames[0].save(destination, save_all=True, append_images=frames[1:], duration=duration_ms, loop=0)
+        return
+    try:
+        import imageio.v2 as imageio
+    except ImportError as exc:
+        raise RuntimeError("MP4 rendering requires imageio and imageio-ffmpeg") from exc
+    imageio.mimsave(destination, [np.asarray(frame) for frame in frames], fps=1000.0 / duration_ms)
 
 
 if __name__ == "__main__":

@@ -112,6 +112,7 @@ def _write_train_config(
         "### train",
         "per_device_train_batch_size: 1",
         "gradient_accumulation_steps: 8",
+        "gradient_checkpointing: true",
         "learning_rate: 1.0e-4",
         "num_train_epochs: 3.0",
         "lr_scheduler_type: cosine",

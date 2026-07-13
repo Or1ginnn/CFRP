@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--startup-timeout", type=int, default=900)
+    parser.add_argument(
+        "--max-episodes-per-split",
+        type=int,
+        default=None,
+        help="Optional prefix limit for smoke gates; omit for full evaluation",
+    )
     return parser.parse_args()
 
 
@@ -61,6 +67,7 @@ def main() -> int:
         "splits": splits,
         "workers_per_rank": args.workers_per_rank,
         "gpu_memory_utilization": args.gpu_memory_utilization,
+        "max_episodes_per_split": args.max_episodes_per_split,
         "model": str(Path(args.model).resolve()),
         "adapter": str(Path(args.adapter).resolve()),
         "started_at": int(time.time()),
@@ -91,6 +98,10 @@ def main() -> int:
         _write_json(output_root / "run_manifest.json", manifest)
         for split in splits:
             episode_ids = _load_episode_ids(Path(args.dataset_root), split)
+            if args.max_episodes_per_split is not None:
+                if args.max_episodes_per_split < 1:
+                    raise ValueError("max-episodes-per-split must be positive")
+                episode_ids = episode_ids[: args.max_episodes_per_split]
             shards = [episode_ids[rank :: len(gpus)] for rank in range(len(gpus))]
             results_dir = output_root / split / "results"
             results_dir.mkdir(parents=True)

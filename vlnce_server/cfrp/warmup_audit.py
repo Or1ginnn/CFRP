@@ -28,6 +28,7 @@ def audit_stage1_warmup(
     max_action_history = int(manifest["max_action_history"])
     if max_visual_history < 1 or max_action_history < 0:
         raise ValueError("invalid history budgets in warm-up manifest")
+    expected_frame_size = _expected_frame_size(manifest)
 
     by_episode: dict[str, list[tuple[Stage1RolloutRequest, Any, Mapping[str, Any]]]] = defaultdict(list)
     seen_turns: set[tuple[str, int]] = set()
@@ -58,7 +59,7 @@ def audit_stage1_warmup(
         if len(request.action_history) > max_action_history:
             raise ValueError(f"line {line_number}: action history exceeds manifest budget")
         if check_frames:
-            _validate_frames(request.visual_history_paths, line_number)
+            _validate_frames(request.visual_history_paths, line_number, expected_frame_size)
         by_episode[request.episode_id].append((request, output, oracle_only))
         action_counts[output.action] += 1
         progress_counts[str(output.progress)] += 1
@@ -115,7 +116,19 @@ def _audit_episode(
         raise ValueError(f"episode {episode_id}: trajectory must end with exactly one STOP")
 
 
-def _validate_frames(paths: Sequence[str], line_number: int) -> None:
+def _expected_frame_size(manifest: Mapping[str, Any]) -> tuple[int, int] | None:
+    contract = manifest.get("visual_contract")
+    if not isinstance(contract, Mapping):
+        return None
+    size = contract.get("habitat_rgb_size")
+    if not isinstance(size, Sequence) or len(size) != 2:
+        raise ValueError("visual contract must contain habitat_rgb_size=[width, height]")
+    return (int(size[0]), int(size[1]))
+
+
+def _validate_frames(
+    paths: Sequence[str], line_number: int, expected_size: tuple[int, int] | None
+) -> None:
     try:
         import numpy as np
     except ImportError as exc:
@@ -127,3 +140,10 @@ def _validate_frames(paths: Sequence[str], line_number: int) -> None:
         frame = np.load(source, mmap_mode="r")
         if frame.ndim != 3 or frame.shape[-1] != 3 or str(frame.dtype) != "uint8":
             raise ValueError(f"line {line_number}: invalid RGB frame {source}")
+        if expected_size is not None:
+            expected_width, expected_height = expected_size
+            if tuple(frame.shape[:2]) != (expected_height, expected_width):
+                raise ValueError(
+                    f"line {line_number}: RGB frame shape {tuple(frame.shape)} does not match "
+                    f"visual contract {expected_width}x{expected_height}"
+                )

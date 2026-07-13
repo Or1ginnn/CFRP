@@ -27,6 +27,7 @@ def _manifest():
         "completed_episode_ids": ["1"],
         "max_visual_history": 4,
         "max_action_history": 3,
+        "visual_contract": {"habitat_rgb_size": [640, 480]},
     }
 
 

@@ -29,6 +29,12 @@ from vlnce_server.habitat030.stage1_runner import (
     DEFAULT_MAX_VISUAL_HISTORY,
     FixedHistoryBuffer,
 )
+from vlnce_server.qwen3vl.vision import (
+    HABITAT_RGB_HEIGHT,
+    HABITAT_RGB_WIDTH,
+    qwen3vl_image_size,
+    qwen3vl_processor_kwargs,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,6 +136,11 @@ def _write_collection_status(
         "max_steps": args.max_steps,
         "max_visual_history": args.max_visual_history,
         "max_action_history": args.max_action_history,
+        "visual_contract": {
+            "habitat_rgb_size": [HABITAT_RGB_WIDTH, HABITAT_RGB_HEIGHT],
+            "model_image_size": list(qwen3vl_image_size()),
+            "processor_kwargs": qwen3vl_processor_kwargs(),
+        },
     }
     if error is not None:
         payload["error"] = error

@@ -1,4 +1,4 @@
-from scripts.render_phase0_videos import episode_frame_paths, select_outcome_episodes
+from scripts.render_phase0_videos import group_all_outcome_episodes, episode_frame_paths, select_outcome_episodes
 
 
 def episode(identifier: str, success: float, paths: list[str]):
@@ -29,3 +29,16 @@ def test_episode_frame_paths_uses_only_latest_distinct_frame():
     }
 
     assert episode_frame_paths(item) == ["/a.npy", "/b.npy"]
+
+
+def test_group_all_outcome_episodes_is_complete_and_sorted():
+    episodes = [
+        {"episode_id": "10", "final_metrics": {"success": 0.0}},
+        {"episode_id": "2", "final_metrics": {"success": 1.0}},
+        {"episode_id": "1", "final_metrics": {"success": 0.0}},
+    ]
+
+    grouped = group_all_outcome_episodes(episodes)
+
+    assert [item["episode_id"] for item in grouped["success"]] == ["2"]
+    assert [item["episode_id"] for item in grouped["failure"]] == ["1", "10"]

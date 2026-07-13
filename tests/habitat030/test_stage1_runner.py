@@ -134,6 +134,15 @@ def test_policy_runner_reuses_history_prompt_protocol_and_action_path():
     assert policy.requests[1].current_plan.current_points()[0].id == "p2"
 
 
+def test_model_request_uses_observation_actions_when_wrapper_does_not_expose_them():
+    wrapper = FakeWrapper()
+    runner = Stage1EpisodeRunner(wrapper, plan())
+    runner.reset()
+    del wrapper.allowed_actions
+
+    assert runner.model_request().allowed_actions == ("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP")
+
+
 @pytest.mark.parametrize(
     "raw_xml",
     [

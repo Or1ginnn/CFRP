@@ -143,12 +143,17 @@ class Stage1EpisodeRunner:
         from vlnce_server.qwen3vl import Stage1ModelRequest
 
         latest_observation = self.history.visual_history[-1]
+        # The observation is the authoritative per-turn action contract.  Some
+        # Habitat wrappers expose no class-level ``allowed_actions`` attribute.
+        allowed_actions = tuple(latest_observation.allowed_actions) or tuple(
+            getattr(self.env_wrapper, "allowed_actions", ())
+        )
         return Stage1ModelRequest(
             instruction=latest_observation.instruction,
             current_plan=current_plan,
             visual_history=tuple(observation.rgb for observation in self.history.visual_history),
             action_history=self.history.action_history,
-            allowed_actions=tuple(getattr(self.env_wrapper, "allowed_actions", ())),
+            allowed_actions=allowed_actions,
         )
 
     def step_with_policy(self, policy: object, turn_index: Optional[int] = None) -> Stage1TrajectoryStep:

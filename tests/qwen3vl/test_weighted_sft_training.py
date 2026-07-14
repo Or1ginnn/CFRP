@@ -1,4 +1,10 @@
-from scripts.train_qwen3vl_stage1_sft import _equal_train_shard, _split_examples_by_episode
+from types import SimpleNamespace
+
+from scripts.train_qwen3vl_stage1_sft import (
+    _equal_train_shard,
+    _optimizer_step_count,
+    _split_examples_by_episode,
+)
 
 
 def _example(episode_id: str, turn_index: int) -> dict:
@@ -32,3 +38,12 @@ def test_ddp_train_shards_have_equal_micro_step_counts():
     assert {item["episode_id"] for shard in shards for item in shard}.issuperset(
         {item["episode_id"] for item in examples}
     )
+
+
+def test_optimizer_step_count_respects_epochs_and_global_micro_step_limit():
+    args = SimpleNamespace(epochs=3, max_steps=None, gradient_accumulation=8)
+
+    assert _optimizer_step_count(2203, args) == 828
+
+    args.max_steps = 10
+    assert _optimizer_step_count(2203, args) == 2

@@ -12,7 +12,9 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
+import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,8 +40,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-jsonl", required=True)
     parser.add_argument("--model", default=DEFAULT_QWEN3_VL_MODEL)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--gradient-accumulation", type=int, default=8)
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
@@ -65,6 +68,8 @@ def main() -> int:
         raise ValueError("all Stage 1 loss weights must be positive")
     if not 0 <= args.validation_fraction < 1:
         raise ValueError("validation-fraction must be in [0, 1)")
+    if not 0 <= args.warmup_ratio < 1:
+        raise ValueError("warmup-ratio must be in [0, 1)")
     if args.save_every_optimizer_steps < 1:
         raise ValueError("save-every-optimizer-steps must be positive")
     examples = load_stage1_sft_jsonl(args.train_jsonl)
@@ -107,7 +112,8 @@ def main() -> int:
     processor = AutoProcessor.from_pretrained(args.model, **qwen3vl_processor_kwargs())
     model_kwargs: dict[str, Any] = {"dtype": torch.bfloat16}
     if runtime.distributed:
-        model_kwargs["device_map"] = {"": runtime.local_rank}
+        # Each DDP process owns one complete model replica on its local GPU.
+        model_kwargs["device_map"] = runtime.local_rank
     else:
         model_kwargs["device_map"] = "auto"
     model = AutoModelForImageTextToText.from_pretrained(
@@ -135,15 +141,21 @@ def main() -> int:
             find_unused_parameters=False,
         )
     model.train()
-    optimizer = torch.optim.AdamW((item for item in model.parameters() if item.requires_grad), lr=args.learning_rate)
-    wandb_run = _start_wandb(args, runtime, examples, train_examples, validation_examples)
     local_train_examples = _equal_train_shard(train_examples, runtime.rank, runtime.world_size)
     local_validation_examples = validation_examples[runtime.rank :: runtime.world_size]
+    optimizer = torch.optim.AdamW((item for item in model.parameters() if item.requires_grad), lr=args.learning_rate)
+    scheduler = _cosine_scheduler(
+        optimizer,
+        total_steps=_optimizer_step_count(len(local_train_examples), args),
+        warmup_ratio=args.warmup_ratio,
+    )
+    wandb_run = _start_wandb(args, runtime, examples, train_examples, validation_examples)
     try:
         micro_steps, optimizer_steps = _train(
             model,
             processor,
             optimizer,
+            scheduler,
             local_train_examples,
             local_validation_examples,
             args,
@@ -311,10 +323,38 @@ def _equal_train_shard(
     return padded[rank:total:world_size]
 
 
+def _optimizer_step_count(local_examples: int, args: argparse.Namespace) -> int:
+    remaining = args.max_steps
+    total = 0
+    for _epoch in range(args.epochs):
+        micro_steps = local_examples if remaining is None else min(local_examples, remaining)
+        total += math.ceil(micro_steps / args.gradient_accumulation)
+        if remaining is not None:
+            remaining -= micro_steps
+            if remaining == 0:
+                break
+    return max(total, 1)
+
+
+def _cosine_scheduler(optimizer: Any, *, total_steps: int, warmup_ratio: float) -> Any:
+    import torch
+
+    warmup_steps = int(total_steps * warmup_ratio)
+
+    def scale(step: int) -> float:
+        if warmup_steps and step < warmup_steps:
+            return (step + 1) / warmup_steps
+        progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * min(max(progress, 0.0), 1.0)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, scale)
+
+
 def _train(
     model: Any,
     processor: Any,
     optimizer: Any,
+    scheduler: Any,
     examples: list[dict[str, Any]],
     validation_examples: list[dict[str, Any]],
     args: argparse.Namespace,
@@ -333,7 +373,9 @@ def _train(
         )
         if max_micro_steps == 0:
             break
-        for micro_index, example in enumerate(examples[:max_micro_steps]):
+        epoch_examples = list(examples)
+        random.Random(args.seed + runtime.rank + epoch * 10_007).shuffle(epoch_examples)
+        for micro_index, example in enumerate(epoch_examples[:max_micro_steps]):
             group_start = (micro_index // args.gradient_accumulation) * args.gradient_accumulation
             group_end = min(group_start + args.gradient_accumulation, max_micro_steps)
             should_step = micro_index + 1 == group_end
@@ -349,12 +391,17 @@ def _train(
             if not should_step:
                 continue
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             optimizer_steps += 1
             mean_loss = _mean_across_ranks(loss.detach(), runtime)
             if wandb_run is not None:
                 wandb_run.log(
-                    {"train/loss": mean_loss, "train/epoch": epoch + (micro_index + 1) / max_micro_steps},
+                    {
+                        "train/loss": mean_loss,
+                        "train/learning_rate": scheduler.get_last_lr()[0],
+                        "train/epoch": epoch + (micro_index + 1) / max_micro_steps,
+                    },
                     step=optimizer_steps,
                 )
             if optimizer_steps % args.save_every_optimizer_steps == 0:
@@ -443,6 +490,7 @@ def _start_wandb(
             "action_loss_weight": args.action_loss_weight,
             "progress_loss_weight": args.progress_loss_weight,
             "subgoal_loss_weight": args.subgoal_loss_weight,
+            "warmup_ratio": args.warmup_ratio,
             "world_size": runtime.world_size,
         },
     )
@@ -496,6 +544,7 @@ def _write_run_manifest(
                 "validation_examples": 0 if validation_examples is None else validation_examples,
                 "epochs": args.epochs,
                 "learning_rate": args.learning_rate,
+                "warmup_ratio": args.warmup_ratio,
                 "gradient_accumulation": args.gradient_accumulation,
                 "lora_rank": args.lora_rank,
                 "lora_alpha": args.lora_alpha,

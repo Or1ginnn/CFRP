@@ -1,7 +1,9 @@
-"""LoRA SFT for the normal Stage 1 Qwen3-VL contract.
+"""Action-weighted LoRA SFT for the normal Stage 1 Qwen3-VL contract.
 
 This script deliberately trains only ``progress/subgoal/action``.  It has no
 risk head, recovery tool, plan update, oracle field, or CFRP branch logic.
+The controller plan is model input and is therefore prompt-masked.  Within the
+terminal XML, primitive actions receive the highest supervised weight.
 """
 
 from __future__ import annotations
@@ -19,6 +21,12 @@ if str(ROOT) not in sys.path:
 from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl, local_image_path
 from vlnce_server.qwen3vl.stage1 import DEFAULT_QWEN3_VL_MODEL
 from vlnce_server.qwen3vl.vision import qwen3vl_processor_kwargs
+from vlnce_server.qwen3vl.loss_weights import (
+    DEFAULT_ACTION_LOSS_WEIGHT,
+    DEFAULT_PROGRESS_LOSS_WEIGHT,
+    DEFAULT_SUBGOAL_LOSS_WEIGHT,
+    locate_target_token_weights,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--gradient-accumulation", type=int, default=8)
+    parser.add_argument("--lora-rank", type=int, default=32)
+    parser.add_argument("--lora-alpha", type=int, default=64)
+    parser.add_argument("--action-loss-weight", type=float, default=DEFAULT_ACTION_LOSS_WEIGHT)
+    parser.add_argument("--progress-loss-weight", type=float, default=DEFAULT_PROGRESS_LOSS_WEIGHT)
+    parser.add_argument("--subgoal-loss-weight", type=float, default=DEFAULT_SUBGOAL_LOSS_WEIGHT)
     parser.add_argument("--max-examples", type=int)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--seed", type=int, default=123)
@@ -38,8 +51,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.epochs < 1 or args.gradient_accumulation < 1:
-        raise ValueError("epochs and gradient-accumulation must be positive")
+    if args.epochs < 1 or args.gradient_accumulation < 1 or args.lora_rank < 1 or args.lora_alpha < 1:
+        raise ValueError("epochs, gradient-accumulation, lora-rank, and lora-alpha must be positive")
+    if min(args.action_loss_weight, args.progress_loss_weight, args.subgoal_loss_weight) <= 0:
+        raise ValueError("all Stage 1 loss weights must be positive")
     examples = load_stage1_sft_jsonl(args.train_jsonl)
     if args.max_examples is not None:
         examples = examples[: args.max_examples]
@@ -74,8 +89,8 @@ def main() -> int:
     model = get_peft_model(
         model,
         LoraConfig(
-            r=16,
-            lora_alpha=32,
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
             lora_dropout=0.05,
             bias="none",
             target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
@@ -89,8 +104,9 @@ def main() -> int:
     optimizer.zero_grad(set_to_none=True)
     for _epoch in range(args.epochs):
         for example in examples:
-            inputs, labels = _supervised_inputs(processor, example, device)
-            loss = model(**inputs, labels=labels).loss / args.gradient_accumulation
+            inputs, labels, token_weights = _supervised_inputs(processor, example, device, args)
+            outputs = model(**inputs)
+            loss = _weighted_causal_lm_loss(outputs.logits, labels, token_weights) / args.gradient_accumulation
             loss.backward()
             if (step + 1) % args.gradient_accumulation == 0:
                 optimizer.step()
@@ -112,7 +128,9 @@ def main() -> int:
     return 0
 
 
-def _supervised_inputs(processor: Any, example: dict[str, Any], device: Any) -> tuple[Any, Any]:
+def _supervised_inputs(
+    processor: Any, example: dict[str, Any], device: Any, args: argparse.Namespace
+) -> tuple[Any, Any, Any]:
     """Mask every prompt token and supervise only the terminal XML response."""
 
     messages = _messages_with_processor_image_paths(example["messages"])
@@ -129,7 +147,39 @@ def _supervised_inputs(processor: Any, example: dict[str, Any], device: Any) -> 
         raise RuntimeError("Qwen chat template changed: assistant target is not a prefix extension")
     labels = full_ids.clone()
     labels[:, :prefix_length] = -100
-    return full.to(device), labels.to(device)
+    token_weights = full_ids.new_ones(full_ids.shape, dtype=getattr(full_ids, "dtype", None)).float()
+    token_weights[:, :prefix_length] = 0.0
+    target_suffix = full_ids[0, prefix_length:].tolist()
+    target_start, target_region_weights = locate_target_token_weights(
+        example["target_xml"],
+        target_suffix,
+        processor.tokenizer,
+        action_weight=args.action_loss_weight,
+        progress_weight=args.progress_loss_weight,
+        subgoal_weight=args.subgoal_loss_weight,
+    )
+    start = prefix_length + target_start
+    token_weights[0, start : start + len(target_region_weights)] = token_weights.new_tensor(target_region_weights)
+    return full.to(device), labels.to(device), token_weights.to(device)
+
+
+def _weighted_causal_lm_loss(logits: Any, labels: Any, token_weights: Any) -> Any:
+    """Causal CE with prompt masking and CFRP terminal-region weights."""
+
+    import torch.nn.functional as functional
+
+    shifted_logits = logits[:, :-1, :].contiguous()
+    shifted_labels = labels[:, 1:].contiguous()
+    shifted_weights = token_weights[:, 1:].contiguous()
+    per_token = functional.cross_entropy(
+        shifted_logits.view(-1, shifted_logits.shape[-1]),
+        shifted_labels.view(-1),
+        reduction="none",
+        ignore_index=-100,
+    ).view_as(shifted_labels)
+    mask = shifted_labels.ne(-100)
+    effective_weights = shifted_weights * mask
+    return (per_token * effective_weights).sum() / effective_weights.sum().clamp_min(1.0)
 
 
 def torch_equal_prefix(full_ids: Any, prompt_ids: Any) -> bool:
@@ -167,6 +217,14 @@ def _write_run_manifest(output_dir: Path, args: argparse.Namespace, examples: li
                 "epochs": args.epochs,
                 "learning_rate": args.learning_rate,
                 "gradient_accumulation": args.gradient_accumulation,
+                "lora_rank": args.lora_rank,
+                "lora_alpha": args.lora_alpha,
+                "loss_weights": {
+                    "action": args.action_loss_weight,
+                    "progress": args.progress_loss_weight,
+                    "subgoal": args.subgoal_loss_weight,
+                    "xml": 1.0,
+                },
                 "optimizer_steps": optimizer_steps,
                 "seed": args.seed,
                 "processor_kwargs": qwen3vl_processor_kwargs(),

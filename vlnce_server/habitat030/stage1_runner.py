@@ -148,7 +148,7 @@ class Stage1EpisodeRunner:
     def __init__(
         self,
         env_wrapper: object,
-        initial_plan: PlanState,
+        initial_plan: Optional[PlanState] = None,
         history: Optional[FixedHistoryBuffer] = None,
     ) -> None:
         self.env_wrapper = env_wrapper
@@ -237,8 +237,6 @@ class Stage1EpisodeRunner:
         if self.initial_observation is None:
             self.reset()
         current_plan = self.controller.current_plan
-        if current_plan is None:
-            raise RuntimeError("Stage 1 runner has no controller-owned plan")
 
         from vlnce_server.qwen3vl import Stage1ModelRequest
 

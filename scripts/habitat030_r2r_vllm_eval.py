@@ -30,7 +30,7 @@ from scripts.habitat030_r2r_qwen_baseline import (
     compare_repetitions,
     summarize,
 )
-from vlnce_server.cfrp import CFRPProtocolError, initialize_plan_from_instruction
+from vlnce_server.cfrp import CFRPProtocolError
 from vlnce_server.habitat030 import Habitat030NavigationEnvironment
 from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
 from vlnce_server.habitat030.stage1_runner import (
@@ -233,7 +233,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
     try:
         runner = Stage1EpisodeRunner(
             wrapper,
-            initialize_plan_from_instruction(record.instruction_text),
+            initial_plan=None,
             history=FixedHistoryBuffer.create(job.max_visual_history, job.max_action_history),
         )
         runner.reset()

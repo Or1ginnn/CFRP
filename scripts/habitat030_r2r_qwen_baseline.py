@@ -18,7 +18,6 @@ if str(ROOT) not in sys.path:
 from vlnce_server.cfrp import (
     CFRPProtocolError,
     Stage1RolloutRequest,
-    initialize_plan_from_instruction,
     request_path,
     response_path,
     wait_for_response,
@@ -142,7 +141,7 @@ def run_episode(
     try:
         runner = Stage1EpisodeRunner(
             wrapper,
-            initialize_plan_from_instruction(record.instruction_text),
+            initial_plan=None,
             history=FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history),
         )
         runner.reset()
@@ -157,8 +156,6 @@ def run_episode(
             try:
                 if runner.needs_model_decision:
                     current_plan = runner.controller.current_plan
-                    if current_plan is None:
-                        raise RuntimeError("Stage 1 controller lost its current plan")
                     latest = runner.history.visual_history[-1]
                     request = Stage1RolloutRequest(
                         episode_id=episode_id,

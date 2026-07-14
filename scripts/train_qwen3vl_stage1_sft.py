@@ -1,9 +1,11 @@
 """Action-weighted LoRA SFT for the normal Stage 1 Qwen3-VL contract.
 
-This script deliberately trains only ``progress/subgoal/action``.  It has no
-risk head, recovery tool, plan update, oracle field, or CFRP branch logic.
-The controller plan is model input and is therefore prompt-masked.  Within the
-terminal XML, primitive actions receive the highest supervised weight.
+This script trains every assistant turn in a bounded streaming conversation.
+The first episode turn also learns compact plan initialization; later turns
+learn ``progress/subgoal/action`` without repeating the controller-owned plan.
+It has no risk head, recovery tool, plan update, oracle field, or branch logic.
+Within each assistant XML response, primitive actions receive the highest
+supervised weight.
 """
 
 from __future__ import annotations
@@ -196,36 +198,77 @@ def main() -> int:
 def _supervised_inputs(
     processor: Any, example: dict[str, Any], device: Any, args: argparse.Namespace
 ) -> tuple[Any, Any, Any]:
-    """Mask every prompt token and supervise only the terminal XML response."""
+    """Mask user/system tokens and supervise every assistant XML response."""
 
     messages = _messages_with_processor_image_paths(example["messages"])
-    prompt = processor.apply_chat_template(
-        messages[:-1], tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
-    )
     full = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=False, return_dict=True, return_tensors="pt"
     )
-    prompt_ids = prompt["input_ids"]
+    _require_visual_tensors(full, "full supervised example")
     full_ids = full["input_ids"]
-    prefix_length = prompt_ids.shape[1]
-    if full_ids.shape[1] <= prefix_length or not torch_equal_prefix(full_ids, prompt_ids):
-        raise RuntimeError("Qwen chat template changed: assistant target is not a prefix extension")
-    labels = full_ids.clone()
-    labels[:, :prefix_length] = -100
+    labels = full_ids.new_full(full_ids.shape, -100)
     token_weights = full_ids.new_ones(full_ids.shape, dtype=getattr(full_ids, "dtype", None)).float()
-    token_weights[:, :prefix_length] = 0.0
-    target_suffix = full_ids[0, prefix_length:].tolist()
-    target_start, target_region_weights = locate_target_token_weights(
-        example["target_xml"],
-        target_suffix,
-        processor.tokenizer,
-        action_weight=args.action_loss_weight,
-        progress_weight=args.progress_loss_weight,
-        subgoal_weight=args.subgoal_loss_weight,
-    )
-    start = prefix_length + target_start
-    token_weights[0, start : start + len(target_region_weights)] = token_weights.new_tensor(target_region_weights)
+    token_weights.zero_()
+
+    for target in example["targets"]:
+        message_index = int(target["message_index"])
+        target_xml = str(target["target_xml"])
+        prompt = processor.apply_chat_template(
+            messages[:message_index],
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        through_target = processor.apply_chat_template(
+            messages[: message_index + 1],
+            tokenize=True,
+            add_generation_prompt=False,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        _require_visual_tensors(prompt, f"prompt before assistant message {message_index}")
+        _require_visual_tensors(through_target, f"assistant message {message_index}")
+        prompt_ids = prompt["input_ids"]
+        through_ids = through_target["input_ids"]
+        prefix_length = prompt_ids.shape[1]
+        target_end = through_ids.shape[1]
+        if (
+            target_end <= prefix_length
+            or not torch_equal_prefix(full_ids, prompt_ids)
+            or not torch_equal_prefix(full_ids, through_ids)
+        ):
+            raise RuntimeError(
+                "Qwen chat template changed: a multi-turn assistant target is not a prefix extension"
+            )
+        labels[:, prefix_length:target_end] = full_ids[:, prefix_length:target_end]
+        token_weights[:, prefix_length:target_end] = 1.0
+        target_suffix = full_ids[0, prefix_length:target_end].tolist()
+        target_start, target_region_weights = locate_target_token_weights(
+            target_xml,
+            target_suffix,
+            processor.tokenizer,
+            action_weight=args.action_loss_weight,
+            progress_weight=args.progress_loss_weight,
+            subgoal_weight=args.subgoal_loss_weight,
+        )
+        start = prefix_length + target_start
+        token_weights[0, start : start + len(target_region_weights)] = token_weights.new_tensor(
+            target_region_weights
+        )
+    if not bool(labels.ne(-100).any().item()):
+        raise RuntimeError("multi-turn SFT example contains no supervised assistant tokens")
     return full.to(device), labels.to(device), token_weights.to(device)
+
+
+def _require_visual_tensors(inputs: Any, source: str) -> None:
+    """Fail loudly if a multimodal SFT sample was reduced to text only."""
+
+    missing = [key for key in ("pixel_values", "image_grid_thw") if key not in inputs]
+    if missing:
+        raise RuntimeError(
+            f"Qwen3-VL {source} is missing visual tensors: {', '.join(missing)}"
+        )
 
 
 def _weighted_causal_lm_loss(logits: Any, labels: Any, token_weights: Any) -> Any:
@@ -482,9 +525,10 @@ def _start_wandb(
         project=args.wandb_project,
         name=args.run_name,
         config={
-            "examples": len(examples),
-            "train_examples": len(train_examples),
-            "validation_examples": len(validation_examples),
+            "conversation_windows": len(examples),
+            "supervised_turns": _supervised_turn_count(examples),
+            "train_windows": len(train_examples),
+            "validation_windows": len(validation_examples),
             "lora_rank": args.lora_rank,
             "lora_alpha": args.lora_alpha,
             "action_loss_weight": args.action_loss_weight,
@@ -498,6 +542,10 @@ def _start_wandb(
 
 def torch_equal_prefix(full_ids: Any, prompt_ids: Any) -> bool:
     return bool((full_ids[:, : prompt_ids.shape[1]] == prompt_ids).all().item())
+
+
+def _supervised_turn_count(examples: list[dict[str, Any]]) -> int:
+    return sum(len(example.get("targets", ())) for example in examples)
 
 
 def _messages_with_processor_image_paths(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -551,6 +599,8 @@ def _write_run_manifest(
                 "status": status,
                 "model": args.model,
                 "examples": len(examples),
+                "conversation_windows": len(examples),
+                "supervised_turns": _supervised_turn_count(examples),
                 "train_examples": len(examples) if train_examples is None else train_examples,
                 "validation_examples": 0 if validation_examples is None else validation_examples,
                 "epochs": args.epochs,

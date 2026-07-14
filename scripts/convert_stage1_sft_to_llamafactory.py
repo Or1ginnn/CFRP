@@ -47,11 +47,13 @@ def main() -> int:
         {
             "schema": "cfrp.llamafactory.stage1_export.v1",
             "source_jsonl": str(Path(args.input_jsonl).resolve()),
-            "examples": len(examples),
+            "conversation_windows": len(examples),
+            "supervised_turns": sum(len(example["targets"]) for example in examples),
             "dataset_name": args.dataset_name,
         },
     )
-    print(f"examples={len(examples)}")
+    print(f"conversation_windows={len(examples)}")
+    print(f"supervised_turns={sum(len(example['targets']) for example in examples)}")
     print(f"dataset_dir={output_dir}")
     print(f"train_config={output_dir / 'train_lora.yaml'}")
     print("convert_stage1_sft_to_llamafactory: OK")
@@ -97,7 +99,7 @@ def _write_train_config(
         f"dataset_dir: {dataset_dir.resolve()}",
         f"dataset: {dataset_name}",
         "template: qwen3_vl_nothink",
-        "cutoff_len: 4096",
+        "cutoff_len: 32768",
         "preprocessing_num_workers: 8",
         "dataloader_num_workers: 4",
         "",

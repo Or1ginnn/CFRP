@@ -65,6 +65,25 @@ def test_request_rejects_oracle_field(tmp_path):
         read_request(path)
 
 
+def test_first_turn_request_round_trips_without_a_plan(tmp_path):
+    first = Stage1RolloutRequest(
+        episode_id="7",
+        request_id=0,
+        turn_index=0,
+        instruction="Leave the bedroom.",
+        current_plan=None,
+        visual_history_paths=("/tmp/frame-0.npy",),
+        action_history=tuple(),
+        allowed_actions=("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP"),
+    )
+    path = request_path(tmp_path, 0)
+
+    write_request(path, first)
+
+    assert read_request(path) == first
+    assert json.loads(path.read_text())["current_plan"] is None
+
+
 def test_response_round_trip(tmp_path):
     path = response_path(tmp_path, 11)
     response = Stage1RolloutResponse(

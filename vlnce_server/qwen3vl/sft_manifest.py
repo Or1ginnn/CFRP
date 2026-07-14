@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import unquote, urlparse
 
-from vlnce_server.cfrp import parse_cfrp_output
+from vlnce_server.cfrp import MAX_STAGE1_ACTION_CHUNK, parse_cfrp_output
 
 from .sft_data import SFT_SCHEMA
 
@@ -36,38 +36,77 @@ def load_stage1_sft_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def validate_stage1_sft_example(example: Mapping[str, Any], *, check_images: bool = False) -> None:
-    """Validate the model-visible conversation and terminal XML target."""
+    """Validate one bounded, model-visible multi-turn conversation window."""
 
     if example.get("schema") != SFT_SCHEMA:
         raise ValueError(f"expected schema {SFT_SCHEMA!r}")
     messages = example.get("messages")
     images = example.get("images")
-    target_xml = example.get("target_xml")
-    if not isinstance(messages, list) or len(messages) != 3:
-        raise ValueError("messages must contain system, user, and assistant entries")
-    if [message.get("role") for message in messages] != ["system", "user", "assistant"]:
-        raise ValueError("messages must be ordered system/user/assistant")
+    targets = example.get("targets")
+    if not isinstance(messages, list) or len(messages) < 3 or len(messages) % 2 != 1:
+        raise ValueError("messages must contain system plus one or more user/assistant turns")
+    expected_roles = ["system"] + [
+        role for _ in range((len(messages) - 1) // 2) for role in ("user", "assistant")
+    ]
+    if [message.get("role") for message in messages] != expected_roles:
+        raise ValueError("messages must alternate system, user, and assistant roles")
+    if not isinstance(messages[0].get("content"), str):
+        raise ValueError("system content must be text")
     if not isinstance(images, list) or not images:
         raise ValueError("images must be a non-empty list")
-    if not isinstance(target_xml, str) or messages[-1].get("content") != target_xml:
-        raise ValueError("assistant content must equal target_xml")
-    parsed = parse_cfrp_output(target_xml)
-    actions = parsed.actions or (parsed.action,)
-    if len(actions) > 4 or any(action not in _ALLOWED_ACTIONS for action in actions):
-        raise ValueError(f"unsupported Stage 1 action chunk: {actions}")
-    if "STOP" in actions and actions != ("STOP",):
-        raise ValueError("STOP must be the only Stage 1 chunk action")
-    user_content = messages[1].get("content")
-    if not isinstance(user_content, list):
-        raise ValueError("user content must be multimodal content blocks")
-    prompt_images = [item.get("image") for item in user_content if item.get("type") == "image"]
+    if not isinstance(targets, list) or len(targets) != (len(messages) - 1) // 2:
+        raise ValueError("targets must describe every assistant turn")
+
+    prompt_images = []
+    for message_index in range(1, len(messages), 2):
+        user_content = messages[message_index].get("content")
+        if not isinstance(user_content, list):
+            raise ValueError("every user turn must contain multimodal content blocks")
+        turn_images = [
+            item.get("image")
+            for item in user_content
+            if isinstance(item, Mapping) and item.get("type") == "image"
+        ]
+        if not turn_images:
+            raise ValueError("every user turn requires at least one image")
+        prompt_images.extend(turn_images)
     if prompt_images != images:
-        raise ValueError("images must match user image blocks in order")
+        raise ValueError("images must match all user image blocks in conversation order")
+
+    for target_index, target in enumerate(targets):
+        if not isinstance(target, Mapping):
+            raise ValueError("target metadata must be objects")
+        message_index = int(target.get("message_index", -1))
+        expected_index = 2 + target_index * 2
+        if message_index != expected_index:
+            raise ValueError("target message indices must match assistant turns")
+        target_xml = target.get("target_xml")
+        if not isinstance(target_xml, str) or messages[message_index].get("content") != target_xml:
+            raise ValueError("assistant content must equal target_xml metadata")
+        parsed = parse_cfrp_output(target_xml)
+        initializes_plan = target.get("initializes_plan") is True
+        if initializes_plan != (parsed.plan is not None):
+            raise ValueError("only an explicitly marked first turn may initialize <plan>")
+        actions = parsed.actions or (parsed.action,)
+        if len(actions) > MAX_STAGE1_ACTION_CHUNK or any(
+            action not in _ALLOWED_ACTIONS for action in actions
+        ):
+            raise ValueError(f"unsupported Stage 1 action chunk: {actions}")
+        if "STOP" in actions and actions != ("STOP",):
+            raise ValueError("STOP must be the only Stage 1 chunk action")
     if check_images:
         for image_uri in images:
             image_path = local_image_path(image_uri)
             if not image_path.is_file():
                 raise ValueError(f"image file is missing: {image_path}")
+
+
+def iter_stage1_targets(example: Mapping[str, Any]) -> Iterable[str]:
+    """Yield every supervised assistant XML response in conversation order."""
+
+    for target in example.get("targets", ()):
+        if isinstance(target, Mapping) and isinstance(target.get("target_xml"), str):
+            yield target["target_xml"]
 
 
 def local_image_path(source: str) -> Path:

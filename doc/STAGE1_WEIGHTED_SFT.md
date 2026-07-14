@@ -1,13 +1,21 @@
 # Stage 1 Weighted SFT
 
-This is the formal Phase 0 cold-start training path. It trains the normal
-Stage 1 controller only: progress, subgoal, and a chunk of one to four
-primitive actions. The controller-owned plan, instruction, action history, and
-visual frames are prompt input and are never supervised as output tokens.
+This is the formal Phase 0 cold-start training path. Each source episode is a
+complete shortest-path expert trajectory. It is converted into bounded
+multi-turn conversation windows instead of independent per-step examples.
+The first episode turn supervises compact `<plan>` initialization together
+with progress, subgoal, and one to three comma-separated primitive actions.
+Later turns receive the controller-owned plan and must not repeat it.
+
+The default window contains at most four user/assistant navigation turns. Its
+first turn receives the full visible slow-fast context; later turns append the
+one to three newly arrived contiguous frames produced by the preceding action
+chunk. Frames are stored once per episode and referenced from windows.
 
 ## Objective
 
-The terminal XML uses weighted causal cross entropy:
+Every assistant XML response in the conversation uses weighted causal cross
+entropy; system and user tokens are prompt-masked:
 
 | Target region | Weight |
 | --- | ---: |
@@ -22,8 +30,8 @@ multi-action execution policy.
 
 ## Required Gates
 
-1. Recollect high-resolution R2R warm-up data after commit `ceec317` or later,
-   then merge, convert, validate, and audit it.
+1. Collect the complete R2R-CE `train` split, then merge, convert, validate,
+   and audit it. `val_seen` and `val_unseen` must never enter SFT.
 2. Run `preflight_qwen3vl_stage1_sft.py --require-action-chunks` over the full
    converted JSONL using the actual Qwen3-VL processor. This checks every image
    and asserts that the assistant XML token alignment receives action weights.
@@ -33,7 +41,7 @@ multi-action execution policy.
 ## Four-GPU Training Shape
 
 The weighted trainer starts one full LoRA-wrapped Qwen3-VL model per GPU under
-DDP. It groups SFT records by episode for a deterministic held-out validation
+DDP. It groups conversation windows by episode for a deterministic held-out validation
 split, pads only the final DDP shard deterministically, logs rank-zero metrics
 to W&B, and writes rank-zero PEFT checkpoints every configured optimizer-step
 interval.
@@ -42,3 +50,8 @@ Typical formal settings are `r=32`, `alpha=64`, three epochs, gradient
 accumulation eight, and a two-percent episode-level validation split. The
 visual contract remains 640x480 Habitat render, Qwen input 384x288, six slow
 memory anchors plus three recent consecutive frames.
+
+Recovery tools are deliberately absent here. Valid `continue/replan` labels
+require model-error states and counterfactual evidence, so they remain in the
+later recovery warm-up rather than being fabricated from successful expert
+trajectories.

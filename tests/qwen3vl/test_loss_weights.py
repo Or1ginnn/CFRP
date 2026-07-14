@@ -7,7 +7,7 @@ from vlnce_server.qwen3vl.loss_weights import (
 )
 
 
-TARGET = "<progress>hold</progress><subgoal>walk past the table</subgoal><actions><action>MOVE_FORWARD</action><action>TURN_LEFT</action></actions>"
+TARGET = "<progress>hold</progress><subgoal>walk past the table</subgoal><action>MOVE_FORWARD, TURN_LEFT</action>"
 
 
 def _char_offsets(text: str):

@@ -12,7 +12,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vlnce_server.cfrp import parse_cfrp_output
-from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl, validate_stage1_sft_example
+from vlnce_server.qwen3vl.sft_manifest import (
+    iter_stage1_targets,
+    load_stage1_sft_jsonl,
+    validate_stage1_sft_example,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,9 +34,11 @@ def main() -> int:
     actions = Counter(
         action
         for item in examples
-        for action in parse_cfrp_output(item["target_xml"]).actions
+        for target_xml in iter_stage1_targets(item)
+        for action in parse_cfrp_output(target_xml).actions
     )
-    print(f"examples={len(examples)}")
+    print(f"conversation_windows={len(examples)}")
+    print(f"supervised_turns={sum(len(item['targets']) for item in examples)}")
     print(f"actions={dict(sorted(actions.items()))}")
     print(f"images_checked={args.check_images}")
     print("validate_stage1_sft_manifest: OK")

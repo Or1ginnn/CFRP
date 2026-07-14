@@ -33,7 +33,7 @@ class Stage1ModelRequest:
     """The complete model-visible state for one Stage 1 navigation decision."""
 
     instruction: str
-    current_plan: PlanState
+    current_plan: PlanState | None
     visual_history: Tuple[Any, ...]
     action_history: Tuple[str, ...]
     allowed_actions: Tuple[str, ...]
@@ -181,11 +181,15 @@ class Qwen3VLStage1Policy:
 def _stage1_context_text(request: Stage1ModelRequest) -> str:
     actions = ", ".join(request.allowed_actions)
     recent_actions = ", ".join(request.action_history) if request.action_history else "None"
+    if request.current_plan is None:
+        plan_text = "None. Initialize a compact <plan> from the navigation instruction."
+    else:
+        plan_text = request.current_plan.to_xml()
     return f"""Navigation instruction:
 {request.instruction}
 
-Controller-owned compact plan (read-only):
-{request.current_plan.to_xml()}
+Current compact plan:
+{plan_text}
 
 Executed recent actions (oldest to newest):
 {recent_actions}

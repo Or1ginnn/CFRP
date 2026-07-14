@@ -33,6 +33,9 @@ class CFRPController:
         )
 
         if self.mode == "stage1":
+            if self.current_plan is None:
+                assert output.plan is not None
+                self.current_plan = output.plan
             assert self.current_plan is not None
             if output.progress == "advance":
                 self.current_plan = self.current_plan.advance_current()

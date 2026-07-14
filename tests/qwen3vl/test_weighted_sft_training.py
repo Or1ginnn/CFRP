@@ -3,8 +3,10 @@ from types import SimpleNamespace
 from scripts.train_qwen3vl_stage1_sft import (
     _equal_train_shard,
     _optimizer_step_count,
+    _require_visual_tensors,
     _split_examples_by_episode,
 )
+import pytest
 
 
 def _example(episode_id: str, turn_index: int) -> dict:
@@ -47,3 +49,12 @@ def test_optimizer_step_count_respects_epochs_and_global_micro_step_limit():
 
     args.max_steps = 10
     assert _optimizer_step_count(2203, args) == 2
+
+
+def test_visual_sft_requires_vit_inputs():
+    _require_visual_tensors(
+        {"pixel_values": object(), "image_grid_thw": object()}, "example"
+    )
+
+    with pytest.raises(RuntimeError, match="missing visual tensors"):
+        _require_visual_tensors({"input_ids": object()}, "example")

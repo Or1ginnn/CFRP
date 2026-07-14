@@ -32,7 +32,7 @@ class Stage1RolloutRequest:
     request_id: int
     turn_index: int
     instruction: str
-    current_plan: PlanState
+    current_plan: PlanState | None
     visual_history_paths: Tuple[str, ...]
     action_history: Tuple[str, ...]
     allowed_actions: Tuple[str, ...]
@@ -44,7 +44,8 @@ class Stage1RolloutRequest:
             raise ValueError("rollout request turn_index must be non-negative")
         if not self.instruction.strip():
             raise ValueError("rollout request requires an instruction")
-        validate_plan(self.current_plan)
+        if self.current_plan is not None:
+            validate_plan(self.current_plan)
         if not self.visual_history_paths:
             raise ValueError("rollout request requires at least one RGB path")
         if not self.allowed_actions:
@@ -57,7 +58,7 @@ class Stage1RolloutRequest:
             "request_id": self.request_id,
             "turn_index": self.turn_index,
             "instruction": self.instruction,
-            "current_plan": _plan_to_dict(self.current_plan),
+            "current_plan": _plan_to_dict(self.current_plan) if self.current_plan is not None else None,
             "visual_history_paths": list(self.visual_history_paths),
             "action_history": list(self.action_history),
             "allowed_actions": list(self.allowed_actions),
@@ -71,7 +72,11 @@ class Stage1RolloutRequest:
             request_id=int(payload["request_id"]),
             turn_index=int(payload["turn_index"]),
             instruction=str(payload["instruction"]),
-            current_plan=_plan_from_dict(payload["current_plan"]),
+            current_plan=(
+                None
+                if payload["current_plan"] is None
+                else _plan_from_dict(payload["current_plan"])
+            ),
             visual_history_paths=tuple(str(path) for path in payload["visual_history_paths"]),
             action_history=tuple(str(action) for action in payload["action_history"]),
             allowed_actions=tuple(str(action) for action in payload["allowed_actions"]),

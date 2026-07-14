@@ -11,27 +11,32 @@ LLAMAFACTORY_SCHEMA = "cfrp.llamafactory.stage1_sft.v1"
 
 
 def make_llamafactory_stage1_example(example: Mapping[str, Any]) -> dict[str, Any]:
-    """Flatten one canonical multimodal chat into LLaMA-Factory ShareGPT data."""
+    """Flatten one canonical multi-turn chat into LLaMA-Factory ShareGPT data."""
 
     validate_stage1_sft_example(example, check_images=False)
     messages = example["messages"]
     system = messages[0]["content"]
-    user_blocks = messages[1]["content"]
-    target_xml = example["target_xml"]
-    if not isinstance(system, str) or not isinstance(user_blocks, list):
-        raise ValueError("canonical Stage 1 messages must contain text system and multimodal user content")
-    prompt, images = _sharegpt_prompt_and_images(user_blocks)
+    if not isinstance(system, str):
+        raise ValueError("canonical Stage 1 system message must contain text")
+    conversations = []
+    images = []
+    for message in messages[1:]:
+        if message["role"] == "user":
+            prompt, turn_images = _sharegpt_prompt_and_images(message["content"])
+            conversations.append({"from": "human", "value": prompt})
+            images.extend(turn_images)
+        else:
+            conversations.append({"from": "gpt", "value": message["content"]})
     converted = {
         "schema": LLAMAFACTORY_SCHEMA,
         "episode_id": example["episode_id"],
-        "turn_index": example["turn_index"],
-        "conversations": [
-            {"from": "human", "value": prompt},
-            {"from": "gpt", "value": target_xml},
-        ],
+        "window_index": example["window_index"],
+        "start_turn_index": example["start_turn_index"],
+        "end_turn_index": example["end_turn_index"],
+        "conversations": conversations,
         "system": system,
         "images": images,
-        "target_xml": target_xml,
+        "targets": example["targets"],
     }
     validate_llamafactory_stage1_example(converted)
     return converted
@@ -42,17 +47,22 @@ def validate_llamafactory_stage1_example(example: Mapping[str, Any]) -> None:
         raise ValueError(f"expected schema {LLAMAFACTORY_SCHEMA!r}")
     conversations = example.get("conversations")
     images = example.get("images")
-    if not isinstance(conversations, list) or len(conversations) != 2:
-        raise ValueError("ShareGPT example must contain one human and one gpt message")
-    if [message.get("from") for message in conversations] != ["human", "gpt"]:
-        raise ValueError("ShareGPT roles must be human then gpt")
-    prompt = conversations[0].get("value")
-    target = conversations[1].get("value")
-    if not isinstance(prompt, str) or not isinstance(target, str) or target != example.get("target_xml"):
-        raise ValueError("ShareGPT prompt/target is malformed")
+    if not isinstance(conversations, list) or not conversations or len(conversations) % 2:
+        raise ValueError("ShareGPT example must contain one or more human/gpt turns")
+    expected_roles = [
+        role for _ in range(len(conversations) // 2) for role in ("human", "gpt")
+    ]
+    if [message.get("from") for message in conversations] != expected_roles:
+        raise ValueError("ShareGPT roles must alternate human and gpt")
+    if any(not isinstance(message.get("value"), str) for message in conversations):
+        raise ValueError("ShareGPT message values must be strings")
     if not isinstance(images, list) or not images:
         raise ValueError("ShareGPT example requires images")
-    if prompt.count("<image>") != len(images):
+    if sum(
+        message["value"].count("<image>")
+        for message in conversations
+        if message["from"] == "human"
+    ) != len(images):
         raise ValueError("ShareGPT image token count must equal image path count")
     for image in images:
         path = local_image_path(image)

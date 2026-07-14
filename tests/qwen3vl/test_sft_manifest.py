@@ -23,9 +23,19 @@ def example():
     return {
         "schema": SFT_SCHEMA,
         "episode_id": "1",
-        "turn_index": 0,
+        "window_index": 1,
+        "start_turn_index": 3,
+        "end_turn_index": 3,
         "images": ["file:///tmp/frame.png"],
-        "target_xml": target,
+        "targets": [
+            {
+                "message_index": 2,
+                "request_id": 1,
+                "turn_index": 3,
+                "initializes_plan": False,
+                "target_xml": target,
+            }
+        ],
         "messages": [
             {"role": "system", "content": "system"},
             {"role": "user", "content": [{"type": "image", "image": "file:///tmp/frame.png"}]},
@@ -79,7 +89,7 @@ def test_llamafactory_export_preserves_target_and_image_order():
 
     converted = make_llamafactory_stage1_example(source)
 
-    assert converted["conversations"][1]["value"] == source["target_xml"]
+    assert converted["conversations"][1]["value"] == source["targets"][0]["target_xml"]
     assert converted["images"] == ["/tmp/frame.png"]
     assert converted["conversations"][0]["value"].count("<image>") == 1
 

@@ -74,10 +74,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def target_xml(progress: str, subgoal: str, actions: Sequence[str]) -> str:
-    if len(actions) == 1:
-        action_xml = f"<action>{actions[0]}</action>"
-    else:
-        action_xml = "<actions>" + "".join(f"<action>{action}</action>" for action in actions) + "</actions>"
+    action_xml = f"<action>{', '.join(actions)}</action>"
     return f"<progress>{progress}</progress><subgoal>{subgoal}</subgoal>{action_xml}"
 
 
@@ -296,7 +293,7 @@ def _label_trajectory(record: Any, raw_steps: Sequence[dict[str, Any]]) -> list[
         progress = "advance" if turn_index in advance_indices else "hold"
         chunk = [raw_step]
         if progress == "hold" and raw_step["action"] != "STOP":
-            while len(chunk) < 4 and cursor + len(chunk) < len(raw_steps):
+            while len(chunk) < 3 and cursor + len(chunk) < len(raw_steps):
                 candidate = raw_steps[cursor + len(chunk)]
                 if candidate["turn_index"] in advance_indices or candidate["action"] == "STOP":
                     break

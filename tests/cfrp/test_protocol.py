@@ -133,7 +133,7 @@ def test_stage1_rejects_tool_and_plan_updates():
             mode="stage1",
         )
 
-    with pytest.raises(CFRPProtocolError, match="must not contain plan updates"):
+    with pytest.raises(CFRPProtocolError, match="must not contain <plan_update>"):
         validate_output(
             parse_cfrp_output(
                 STAGE1_HOLD_XML
@@ -145,16 +145,29 @@ def test_stage1_rejects_tool_and_plan_updates():
         )
 
 
-def test_stage1_requires_valid_progress_and_controller_plan():
+def test_stage1_requires_valid_progress_and_initializes_plan_once():
     output = parse_cfrp_output(STAGE1_HOLD_XML.replace("hold", "done", 1))
     plan = parse_cfrp_output(INIT_XML).plan
     assert plan is not None
 
     with pytest.raises(CFRPProtocolError, match="invalid progress"):
         validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
-    with pytest.raises(CFRPProtocolError, match="controller-owned"):
+    with pytest.raises(CFRPProtocolError, match="must initialize <plan>"):
         validate_output(
             parse_cfrp_output(STAGE1_HOLD_XML), ALLOWED_ACTIONS, mode="stage1"
+        )
+    validate_output(
+        parse_cfrp_output(plan.to_xml() + STAGE1_HOLD_XML),
+        ALLOWED_ACTIONS,
+        previous_plan=None,
+        mode="stage1",
+    )
+    with pytest.raises(CFRPProtocolError, match="must not repeat <plan>"):
+        validate_output(
+            parse_cfrp_output(plan.to_xml() + STAGE1_HOLD_XML),
+            ALLOWED_ACTIONS,
+            previous_plan=plan,
+            mode="stage1",
         )
 
 
@@ -218,15 +231,18 @@ def test_stage1_accepts_a_bounded_action_chunk_but_stage2_remains_atomic():
     assert plan is not None
     output = parse_cfrp_output(
         "<progress>hold</progress><subgoal>cross the room</subgoal>"
-        "<actions><action>MOVE_FORWARD</action><action>MOVE_FORWARD</action>"
-        "<action>TURN_LEFT</action></actions>"
+        "<action>MOVE_FORWARD, MOVE_FORWARD, TURN_LEFT</action>"
     )
 
     validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
     assert output.actions == ("MOVE_FORWARD", "MOVE_FORWARD", "TURN_LEFT")
     assert output.action == "MOVE_FORWARD"
+    stage2_output = parse_cfrp_output(
+        "<tool>continue</tool><subgoal>cross the room</subgoal>"
+        "<action>MOVE_FORWARD, TURN_LEFT</action>"
+    )
     with pytest.raises(CFRPProtocolError, match="exactly one action"):
-        validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage2")
+        validate_output(stage2_output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage2")
 
 
 def test_stage1_rejects_stop_mixed_with_other_chunk_actions():
@@ -234,11 +250,28 @@ def test_stage1_rejects_stop_mixed_with_other_chunk_actions():
     assert plan is not None
     output = parse_cfrp_output(
         "<progress>hold</progress><subgoal>stop</subgoal>"
-        "<actions><action>MOVE_FORWARD</action><action>STOP</action></actions>"
+        "<action>MOVE_FORWARD, STOP</action>"
     )
 
     with pytest.raises(CFRPProtocolError, match="STOP must be the only"):
         validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
+
+
+def test_stage1_rejects_more_than_three_actions_and_legacy_actions_tag():
+    plan = parse_cfrp_output(INIT_XML).plan
+    assert plan is not None
+    output = parse_cfrp_output(
+        "<progress>hold</progress><subgoal>cross the room</subgoal>"
+        "<action>MOVE_FORWARD, MOVE_FORWARD, TURN_LEFT, MOVE_FORWARD</action>"
+    )
+    with pytest.raises(CFRPProtocolError, match="exceeds 3"):
+        validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
+
+    with pytest.raises(CFRPProtocolError, match="not <actions>"):
+        parse_cfrp_output(
+            "<progress>hold</progress><subgoal>cross the room</subgoal>"
+            "<actions><action>MOVE_FORWARD</action></actions>"
+        )
 
 
 def test_replan_requires_plan():

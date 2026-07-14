@@ -83,16 +83,25 @@ def audit_stage1_warmup(
 
 
 def audit_sft_alignment(records: Sequence[Mapping[str, Any]], sft_examples: Sequence[Mapping[str, Any]]) -> None:
-    """Ensure conversion preserved a one-to-one target ordering."""
+    """Ensure windowing preserved every oracle turn exactly once and in order."""
 
-    if len(records) != len(sft_examples):
-        raise ValueError("warm-up and SFT record counts differ")
-    for index, (record, example) in enumerate(zip(records, sft_examples), start=1):
+    converted_targets = [
+        (str(example.get("episode_id")), target)
+        for example in sft_examples
+        for target in example.get("targets", ())
+    ]
+    if len(records) != len(converted_targets):
+        raise ValueError("warm-up records and SFT supervised turn counts differ")
+    for index, (record, converted) in enumerate(zip(records, converted_targets), start=1):
+        episode_id, target = converted
+        if not isinstance(target, Mapping):
+            raise ValueError(f"SFT target {index} is malformed")
         request = Stage1RolloutRequest.from_dict(record["model_input"])
-        if example.get("episode_id") != request.episode_id or example.get("turn_index") != request.turn_index:
-            raise ValueError(f"SFT example {index} does not match warm-up episode/turn")
-        if example.get("target_xml") != record.get("target_xml"):
-            raise ValueError(f"SFT example {index} target XML differs from warm-up record")
+        if episode_id != request.episode_id or int(target.get("turn_index", -1)) != request.turn_index:
+            raise ValueError(f"SFT target {index} does not match warm-up episode/turn")
+        converted_xml = target.get("target_xml")
+        if not isinstance(converted_xml, str) or not converted_xml.endswith(str(record.get("target_xml"))):
+            raise ValueError(f"SFT target {index} differs from warm-up record")
 
 
 def _audit_episode(

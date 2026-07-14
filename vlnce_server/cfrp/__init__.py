@@ -30,6 +30,7 @@ from .plan_initializer import advance_turn_indices, initialize_plan_from_instruc
 from .protocol import (
     CFRPOutput,
     CFRPProtocolError,
+    MAX_STAGE1_ACTION_CHUNK,
     PlanPoint,
     PlanState,
     PlanUpdate,
@@ -71,6 +72,7 @@ __all__ = [
     "HabitatActionAdapter",
     "HabitatActionCommand",
     "MetricSnapshot",
+    "MAX_STAGE1_ACTION_CHUNK",
     "NavigationPose",
     "PlanPoint",
     "PlanState",

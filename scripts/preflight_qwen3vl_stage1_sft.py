@@ -17,14 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.train_qwen3vl_stage1_sft import _messages_with_processor_image_paths, _supervised_inputs
+from scripts.train_qwen3vl_stage1_sft import _supervised_inputs
 from vlnce_server.cfrp import parse_cfrp_output
 from vlnce_server.qwen3vl.loss_weights import (
     DEFAULT_ACTION_LOSS_WEIGHT,
     DEFAULT_PROGRESS_LOSS_WEIGHT,
     DEFAULT_SUBGOAL_LOSS_WEIGHT,
 )
-from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl
+from vlnce_server.qwen3vl.sft_manifest import iter_stage1_targets, load_stage1_sft_jsonl
 from vlnce_server.qwen3vl.stage1 import DEFAULT_QWEN3_VL_MODEL
 from vlnce_server.qwen3vl.vision import qwen3vl_processor_kwargs
 
@@ -47,7 +47,9 @@ def main() -> int:
     if args.max_examples is not None:
         examples = examples[: args.max_examples]
     if args.require_action_chunks and not any(
-        len(parse_cfrp_output(item["target_xml"]).actions) > 1 for item in examples
+        len(parse_cfrp_output(target).actions) > 1
+        for item in examples
+        for target in iter_stage1_targets(item)
     ):
         raise ValueError("manifest contains no multi-action Stage 1 targets; recollect short-chunk warm-up data")
     try:
@@ -67,12 +69,12 @@ def main() -> int:
         # This first pass also checks that every declared image is readable by
         # Qwen's real multimodal chat template.
         _supervised_inputs(processor, example, torch.device("cpu"), weight_args)
-        target = example["target_xml"]
-        action_weighted_tokens += sum(
-            1
-            for value in _target_weights(processor, target)
-            if value == DEFAULT_ACTION_LOSS_WEIGHT
-        )
+        for target in iter_stage1_targets(example):
+            action_weighted_tokens += sum(
+                1
+                for value in _target_weights(processor, target)
+                if value == DEFAULT_ACTION_LOSS_WEIGHT
+            )
         if index % 100 == 0:
             print(f"checked={index}")
     if action_weighted_tokens == 0:
@@ -80,7 +82,8 @@ def main() -> int:
     report = {
         "schema": "cfrp.qwen3vl.stage1_sft_preflight.v1",
         "status": "passed",
-        "examples": len(examples),
+        "conversation_windows": len(examples),
+        "supervised_turns": sum(len(example["targets"]) for example in examples),
         "model": args.model,
         "processor_kwargs": qwen3vl_processor_kwargs(),
         "require_action_chunks": args.require_action_chunks,
@@ -89,7 +92,8 @@ def main() -> int:
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"examples={len(examples)}")
+    print(f"conversation_windows={len(examples)}")
+    print(f"supervised_turns={sum(len(example['targets']) for example in examples)}")
     print(f"report={report_path}")
     print("preflight_qwen3vl_stage1_sft: OK")
     return 0

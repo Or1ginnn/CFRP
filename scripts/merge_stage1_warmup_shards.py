@@ -71,6 +71,7 @@ def merge_warmup_shards(shard_dirs: Sequence[Path], output_dir: Path) -> dict[st
         "max_visual_history": reference["max_visual_history"],
         "max_action_history": reference["max_action_history"],
         "visual_contract": reference["visual_contract"],
+        "temporal_visual_history": reference.get("temporal_visual_history"),
         "source_shards": shard_summaries,
         "records": len(all_records),
     }
@@ -106,6 +107,7 @@ def _validate_shared_contract(manifests: Sequence[dict[str, Any]]) -> None:
         "max_visual_history",
         "max_action_history",
         "visual_contract",
+        "temporal_visual_history",
     )
     for index, manifest in enumerate(manifests[1:], start=1):
         for key in keys:

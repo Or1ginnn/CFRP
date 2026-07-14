@@ -6,7 +6,10 @@ from types import ModuleType
 
 import pytest
 
-from scripts.convert_stage1_warmup_to_sft import _export_images
+from scripts.convert_stage1_warmup_to_sft import (
+    _export_images,
+    _iter_unique_image_paths,
+)
 from scripts.train_qwen3vl_stage1_sft import _messages_with_processor_image_paths
 from vlnce_server.qwen3vl.llamafactory_data import make_llamafactory_stage1_example
 from vlnce_server.qwen3vl.sft_data import SFT_SCHEMA
@@ -128,6 +131,31 @@ def test_warmup_image_export_reuses_identical_source_frame(tmp_path: Path, monke
 
     assert exported[0] == exported[1]
     assert len(list((tmp_path / "images").glob("*.png"))) == 1
+
+
+def test_unique_image_scan_preserves_first_seen_order(tmp_path: Path):
+    first = tmp_path / "first.npy"
+    second = tmp_path / "second.npy"
+    source = tmp_path / "warmup.jsonl"
+    source.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "model_input": {
+                        "visual_history_paths": [str(first), str(second), str(first)]
+                    }
+                }
+            )
+            for _ in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert list(_iter_unique_image_paths(source)) == [
+        str(first.resolve()),
+        str(second.resolve()),
+    ]
 
 
 def test_sft_dry_run_executes_main_and_writes_manifest(tmp_path: Path):

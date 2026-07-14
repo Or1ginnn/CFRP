@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import multiprocessing
 import sys
 from pathlib import Path
+from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,6 +30,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_CONVERSATION_TURNS,
     )
+    parser.add_argument(
+        "--image-workers",
+        type=int,
+        default=1,
+        help="Parallel workers used to resize unique source frames before conversation export.",
+    )
     return parser.parse_args()
 
 
@@ -37,6 +45,13 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
     images_dir = output_dir / "images"
+    if args.image_workers < 1:
+        raise ValueError("image-workers must be at least one")
+    unique_images = _export_unique_images_parallel(
+        input_path,
+        images_dir,
+        workers=args.image_workers,
+    )
     output_path = output_dir / "stage1_sft.jsonl"
     windows = 0
     turns = 0
@@ -87,7 +102,8 @@ def main() -> int:
                 "conversation_windows": windows,
                 "supervised_turns": turns,
                 "max_conversation_turns": args.max_conversation_turns,
-                "unique_images": len(image_cache),
+                "unique_images": unique_images,
+                "image_workers": args.image_workers,
                 "habitat_rgb_size": [640, 480],
                 "model_image_size": list(qwen3vl_image_size()),
                 "processor_kwargs": qwen3vl_processor_kwargs(),
@@ -100,18 +116,13 @@ def main() -> int:
     print(f"episodes={episodes}")
     print(f"conversation_windows={windows}")
     print(f"supervised_turns={turns}")
+    print(f"unique_images={unique_images}")
     print(f"sft_jsonl={output_path}")
     print("convert_stage1_warmup_to_sft: OK")
     return 0
 
 
 def _export_images(record: dict, images_dir: Path, image_cache: dict[str, str]) -> list[str]:
-    try:
-        import numpy as np
-        from PIL import Image
-    except ImportError as exc:
-        raise RuntimeError("conversion requires numpy and Pillow") from exc
-
     request = record["model_input"]
     image_paths = request["visual_history_paths"]
     image_uris = []
@@ -119,17 +130,81 @@ def _export_images(record: dict, images_dir: Path, image_cache: dict[str, str]) 
         source = str(Path(image_path).resolve())
         image_uri = image_cache.get(source)
         if image_uri is None:
-            array = np.load(source)
-            digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
-            destination = images_dir / f"frame-{digest}.png"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(array).convert("RGB").resize(
-                qwen3vl_image_size(), resample=Image.Resampling.LANCZOS
-            ).save(destination)
+            destination = _image_destination(source, images_dir)
+            if not destination.is_file():
+                _convert_image((source, str(destination)))
             image_uri = destination.resolve().as_uri()
             image_cache[source] = image_uri
         image_uris.append(image_uri)
     return image_uris
+
+
+def _export_unique_images_parallel(
+    input_path: Path,
+    images_dir: Path,
+    *,
+    workers: int,
+) -> int:
+    """Resize every referenced source frame once before ordered JSONL export."""
+
+    images_dir.mkdir(parents=True, exist_ok=True)
+    tasks = (
+        (source, str(_image_destination(source, images_dir)))
+        for source in _iter_unique_image_paths(input_path)
+    )
+    if workers == 1:
+        return sum(1 for task in tasks if _convert_image(task))
+    context = multiprocessing.get_context("spawn")
+    with context.Pool(processes=workers) as pool:
+        return sum(
+            1
+            for _ in pool.imap_unordered(
+                _convert_image,
+                tasks,
+                chunksize=16,
+            )
+        )
+
+
+def _iter_unique_image_paths(input_path: Path) -> Iterator[str]:
+    seen: set[str] = set()
+    with input_path.open("r", encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            try:
+                paths = record["model_input"]["visual_history_paths"]
+            except (KeyError, TypeError) as exc:
+                raise ValueError(f"record {line_number} has no visual history paths") from exc
+            for value in paths:
+                path = str(Path(value).resolve())
+                if path not in seen:
+                    seen.add(path)
+                    yield path
+
+
+def _image_destination(source: str, images_dir: Path) -> Path:
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:20]
+    return images_dir / f"frame-{digest}.png"
+
+
+def _convert_image(task: tuple[str, str]) -> bool:
+    try:
+        import numpy as np
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("conversion requires numpy and Pillow") from exc
+
+    source, destination_value = task
+    destination = Path(destination_value)
+    if not destination.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        array = np.load(source)
+        Image.fromarray(array).convert("RGB").resize(
+            qwen3vl_image_size(), resample=Image.Resampling.LANCZOS
+        ).save(destination)
+    return True
 
 
 if __name__ == "__main__":

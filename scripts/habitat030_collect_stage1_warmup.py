@@ -43,7 +43,7 @@ from vlnce_server.qwen3vl.vision import (
 )
 
 
-CONSERVATIVE_ORACLE_GOAL_RADIUS = 0.2
+DEFAULT_ORACLE_WAYPOINT_RADIUS = 0.2
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--oracle-goal-radius",
         type=float,
         default=None,
-        help="Optional stricter oracle STOP radius; defaults to the configured R2R success distance.",
+        help="Reference-waypoint radius; defaults to 0.2m and never exceeds success-distance.",
     )
     return parser.parse_args()
 
@@ -147,6 +147,15 @@ def _write_collection_status(
         "max_steps": args.max_steps,
         "max_visual_history": args.max_visual_history,
         "max_action_history": args.max_action_history,
+        "oracle_policy": {
+            "route": "r2r_reference_path",
+            "waypoint_radius": min(
+                getattr(args, "success_distance", 3.0),
+                DEFAULT_ORACLE_WAYPOINT_RADIUS
+                if getattr(args, "oracle_goal_radius", None) is None
+                else args.oracle_goal_radius,
+            ),
+        },
         "visual_contract": {
             "habitat_rgb_size": [HABITAT_RGB_WIDTH, HABITAT_RGB_HEIGHT],
             "model_image_size": list(qwen3vl_image_size()),
@@ -189,7 +198,9 @@ def _select_episode_ids(args: argparse.Namespace) -> tuple[str, ...]:
     return tuple(record.episode_id for record in selected)
 
 
-def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path) -> tuple[list[dict[str, Any]], bool]:
+def collect_episode(
+    args: argparse.Namespace, episode_id: str, output_dir: Path
+) -> tuple[list[dict[str, Any]], bool]:
     from habitat.tasks.nav.shortest_path_follower import ShortestPathFollower
 
     env, record = create_r2r_habitat_env(
@@ -218,53 +229,42 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
             slow_memory_update_interval=history.slow_memory_update_interval,
         ).reset(_save_frame(observation.rgb, frames_dir, 0))
         task_success_distance = _task_success_distance(env, args.success_distance)
-        follower_goal_radius = (
-            task_success_distance
+        follower_goal_radius = min(
+            task_success_distance,
+            DEFAULT_ORACLE_WAYPOINT_RADIUS
             if args.oracle_goal_radius is None
-            else min(task_success_distance, args.oracle_goal_radius)
+            else args.oracle_goal_radius,
         )
+        if follower_goal_radius <= 0:
+            raise ValueError("oracle waypoint radius must be positive")
+        waypoints = _reference_waypoints(record.reference_path)
+        waypoint_index = 0
         follower = ShortestPathFollower(
             sim=env.sim,
             goal_radius=follower_goal_radius,
             return_one_hot=False,
+            stop_on_error=False,
         )
         raw_steps = []
         for turn_index in range(args.max_steps):
-            raw_action = follower.get_next_action(env.current_episode.goals[0].position)
-            action = cfrp_action_from_habitat_oracle(raw_action)
-            distance_to_goal = wrapper.metrics().distance_to_goal
-            if _oracle_stop_requires_fallback(
-                action, distance_to_goal, task_success_distance
-            ):
-                fallback_radius = min(
-                    follower_goal_radius, CONSERVATIVE_ORACLE_GOAL_RADIUS
-                )
-                if fallback_radius >= follower_goal_radius:
+            while True:
+                try:
+                    raw_action = follower.get_next_action(waypoints[waypoint_index])
+                except Exception as exc:
                     raise RuntimeError(
-                        f"oracle STOP remained premature for episode {episode_id}; "
-                        f"task_success_distance={task_success_distance} "
-                        f"follower_goal_radius={follower_goal_radius} "
-                        f"distance_to_goal={distance_to_goal}"
-                    )
-                follower_goal_radius = fallback_radius
+                        f"reference-path follower failed for episode {episode_id} "
+                        f"at waypoint {waypoint_index + 1}/{len(waypoints)}"
+                    ) from exc
+                action = cfrp_action_from_habitat_oracle(raw_action)
+                if action != "STOP" or waypoint_index == len(waypoints) - 1:
+                    break
+                waypoint_index += 1
                 follower = ShortestPathFollower(
                     sim=env.sim,
                     goal_radius=follower_goal_radius,
                     return_one_hot=False,
+                    stop_on_error=False,
                 )
-                raw_action = follower.get_next_action(
-                    env.current_episode.goals[0].position
-                )
-                action = cfrp_action_from_habitat_oracle(raw_action)
-                if _oracle_stop_requires_fallback(
-                    action, distance_to_goal, task_success_distance
-                ):
-                    raise RuntimeError(
-                        f"strict oracle STOP was not task-valid for episode {episode_id}; "
-                        f"task_success_distance={task_success_distance} "
-                        f"follower_goal_radius={follower_goal_radius} "
-                        f"distance_to_goal={distance_to_goal}"
-                    )
             oracle_state = wrapper.privileged_state()
             raw_steps.append(
                 {
@@ -278,9 +278,17 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                         "oracle_action": action,
                         "task_success_distance": task_success_distance,
                         "follower_goal_radius": follower_goal_radius,
+                        "oracle_route": "r2r_reference_path",
+                        "waypoint_index": waypoint_index,
+                        "waypoint_count": len(waypoints),
+                        "waypoint_position": list(waypoints[waypoint_index]),
                         "agent_position": list(oracle_state.agent_position),
-                        "goal_positions": [list(position) for position in oracle_state.goal_positions],
-                        "expert_path": [list(position) for position in oracle_state.expert_path],
+                        "goal_positions": [
+                            list(position) for position in oracle_state.goal_positions
+                        ],
+                        "expert_path": [
+                            list(position) for position in oracle_state.expert_path
+                        ],
                     },
                 }
             )
@@ -300,9 +308,14 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                         f"distance_to_goal={step.metrics.distance_to_goal}"
                     )
                 return _label_trajectory(record, raw_steps), True
-        raise RuntimeError(f"oracle did not terminate episode {episode_id} within {args.max_steps} steps")
+        raise RuntimeError(
+            f"oracle did not terminate episode {episode_id} "
+            f"within {args.max_steps} steps"
+        )
     except OracleActionError as exc:
-        raise RuntimeError(f"failed to collect oracle label for episode {episode_id}: {exc}") from exc
+        raise RuntimeError(
+            f"failed to collect oracle label for episode {episode_id}: {exc}"
+        ) from exc
     finally:
         wrapper.close()
 
@@ -348,7 +361,11 @@ def _label_trajectory(record: Any, raw_steps: Sequence[dict[str, Any]]) -> list[
         records.append(
             {
                 "model_input": request.to_dict(),
-                "target_xml": target_xml(progress, current_point.text, tuple(item["action"] for item in chunk)),
+                "target_xml": target_xml(
+                    progress,
+                    current_point.text,
+                    tuple(item["action"] for item in chunk),
+                ),
                 "oracle_only": {
                     **raw_step["oracle_only"],
                     "oracle_actions": [item["action"] for item in chunk],
@@ -378,14 +395,19 @@ def _task_success_distance(env: Any, fallback: float) -> float:
     return float(value)
 
 
-def _oracle_stop_requires_fallback(
-    action: str, distance_to_goal: float | None, success_distance: float
-) -> bool:
-    """Reject follower STOP until Habitat's task distance satisfies R2R success."""
+def _reference_waypoints(
+    reference_path: Sequence[Sequence[float]],
+) -> tuple[tuple[float, ...], ...]:
+    """Return expert waypoints after the start pose, preserving R2R route order."""
 
-    return action == "STOP" and (
-        distance_to_goal is None or distance_to_goal > success_distance
+    points = tuple(
+        tuple(float(value) for value in point) for point in reference_path
     )
+    if len(points) < 2:
+        raise ValueError(
+            "R2R reference_path must contain a start and at least one waypoint"
+        )
+    return points[1:]
 
 
 if __name__ == "__main__":

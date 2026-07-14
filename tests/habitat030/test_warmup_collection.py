@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.habitat030_collect_stage1_warmup import (
-    _oracle_stop_requires_fallback,
+    _reference_waypoints,
     _select_episode_ids,
     _write_collection_status,
 )
@@ -53,8 +53,16 @@ def test_select_episode_ids_rejects_out_of_range_shard(monkeypatch):
         _select_episode_ids(args)
 
 
-def test_failed_collection_writes_status_instead_of_complete_manifest(tmp_path: Path):
-    args = Namespace(split="train", seed=123, max_steps=160, max_visual_history=4, max_action_history=3)
+def test_failed_collection_writes_status_instead_of_complete_manifest(
+    tmp_path: Path,
+):
+    args = Namespace(
+        split="train",
+        seed=123,
+        max_steps=160,
+        max_visual_history=4,
+        max_action_history=3,
+    )
 
     _write_collection_status(
         tmp_path,
@@ -69,14 +77,18 @@ def test_failed_collection_writes_status_instead_of_complete_manifest(tmp_path: 
     status = json.loads((tmp_path / "collection_status.json").read_text(encoding="utf-8"))
     assert status["status"] == "failed"
     assert status["completed_episode_ids"] == ["1"]
+    assert status["oracle_policy"] == {
+        "route": "r2r_reference_path",
+        "waypoint_radius": 0.2,
+    }
 
 
-def test_oracle_stop_falls_back_outside_task_success_distance():
-    assert _oracle_stop_requires_fallback("STOP", 4.065, 3.0)
-    assert _oracle_stop_requires_fallback("STOP", None, 3.0)
+def test_reference_waypoints_preserve_expert_route_after_start():
+    path = ((0, 0, 0), (1, 0, 2), (3, 0, 4))
+
+    assert _reference_waypoints(path) == ((1.0, 0.0, 2.0), (3.0, 0.0, 4.0))
 
 
-def test_oracle_stop_is_kept_inside_task_success_distance():
-    assert not _oracle_stop_requires_fallback("STOP", 3.0, 3.0)
-    assert not _oracle_stop_requires_fallback("STOP", 2.9, 3.0)
-    assert not _oracle_stop_requires_fallback("MOVE_FORWARD", 4.0, 3.0)
+def test_reference_waypoints_require_a_route_after_start():
+    with pytest.raises(ValueError, match="reference_path"):
+        _reference_waypoints(((0, 0, 0),))

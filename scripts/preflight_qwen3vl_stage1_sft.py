@@ -8,6 +8,7 @@ action-weighted loss, before an expensive multi-GPU training job starts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -35,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_QWEN3_VL_MODEL)
     parser.add_argument("--report", required=True)
     parser.add_argument("--max-examples", type=int)
+    parser.add_argument(
+        "--processor-sample-examples",
+        type=int,
+        help="Deterministically sample this many windows for real multimodal processing.",
+    )
     parser.add_argument("--require-action-chunks", action="store_true")
     return parser.parse_args()
 
@@ -43,6 +49,8 @@ def main() -> int:
     args = parse_args()
     if args.max_examples is not None and args.max_examples < 1:
         raise ValueError("max-examples must be positive")
+    if args.processor_sample_examples is not None and args.processor_sample_examples < 1:
+        raise ValueError("processor-sample-examples must be positive")
     examples = load_stage1_sft_jsonl(args.train_jsonl)
     if args.max_examples is not None:
         examples = examples[: args.max_examples]
@@ -52,6 +60,7 @@ def main() -> int:
         for target in iter_stage1_targets(item)
     ):
         raise ValueError("manifest contains no multi-action Stage 1 targets; recollect short-chunk warm-up data")
+    processor_examples = _processor_sample(examples, args.processor_sample_examples)
     try:
         import torch
         from transformers import AutoProcessor
@@ -65,18 +74,18 @@ def main() -> int:
         subgoal_loss_weight=DEFAULT_SUBGOAL_LOSS_WEIGHT,
     )
     action_weighted_tokens = 0
-    for index, example in enumerate(examples, start=1):
-        # This first pass also checks that every declared image is readable by
-        # Qwen's real multimodal chat template.
+    for index, example in enumerate(processor_examples, start=1):
         _supervised_inputs(processor, example, torch.device("cpu"), weight_args)
+        if index % 100 == 0:
+            print(f"processor_checked={index}")
+    for index, example in enumerate(examples, start=1):
         for target in iter_stage1_targets(example):
             action_weighted_tokens += sum(
-                1
+                value == DEFAULT_ACTION_LOSS_WEIGHT
                 for value in _target_weights(processor, target)
-                if value == DEFAULT_ACTION_LOSS_WEIGHT
             )
-        if index % 100 == 0:
-            print(f"checked={index}")
+        if index % 10_000 == 0:
+            print(f"target_weights_checked={index}")
     if action_weighted_tokens == 0:
         raise RuntimeError("preflight found no action-weighted target tokens")
     report = {
@@ -84,6 +93,10 @@ def main() -> int:
         "status": "passed",
         "conversation_windows": len(examples),
         "supervised_turns": sum(len(example["targets"]) for example in examples),
+        "processor_examples_checked": len(processor_examples),
+        "processor_sampling": (
+            "all" if len(processor_examples) == len(examples) else "stable_hash"
+        ),
         "model": args.model,
         "processor_kwargs": qwen3vl_processor_kwargs(),
         "require_action_chunks": args.require_action_chunks,
@@ -94,6 +107,7 @@ def main() -> int:
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"conversation_windows={len(examples)}")
     print(f"supervised_turns={sum(len(example['targets']) for example in examples)}")
+    print(f"processor_examples_checked={len(processor_examples)}")
     print(f"report={report_path}")
     print("preflight_qwen3vl_stage1_sft: OK")
     return 0
@@ -111,6 +125,19 @@ def _target_weights(processor: object, target_xml: str) -> list[float]:
         processor.tokenizer,
     )
     return weights
+
+
+def _processor_sample(
+    examples: list[dict], requested: int | None
+) -> list[dict]:
+    if requested is None or requested >= len(examples):
+        return examples
+    return sorted(
+        examples,
+        key=lambda item: hashlib.sha256(
+            f"{item['episode_id']}:{item['window_index']}".encode("utf-8")
+        ).digest(),
+    )[:requested]
 
 
 if __name__ == "__main__":

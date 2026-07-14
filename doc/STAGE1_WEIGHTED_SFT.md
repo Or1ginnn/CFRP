@@ -36,9 +36,11 @@ multi-action execution policy.
 
 1. Collect the complete R2R-CE `train` split, then merge, convert, validate,
    and audit it. `val_seen` and `val_unseen` must never enter SFT.
-2. Run `preflight_qwen3vl_stage1_sft.py --require-action-chunks` over the full
-   converted JSONL using the actual Qwen3-VL processor. This checks every image
-   and asserts that the assistant XML token alignment receives action weights.
+2. Run `validate_stage1_sft_manifest.py --check-images` over every converted
+   window, then run `preflight_qwen3vl_stage1_sft.py --require-action-chunks`
+   over the full JSONL. The preflight checks token weights for every assistant
+   target and uses a deterministic whole-dataset sample for the expensive real
+   Qwen3-VL multimodal processor path. The report must state both counts.
 3. Train with `torchrun`; do not use the generated LLaMA-Factory YAML for this
    run. That YAML remains an unweighted CE reference baseline.
 

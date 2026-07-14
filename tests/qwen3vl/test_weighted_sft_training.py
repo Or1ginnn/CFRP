@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from scripts.preflight_qwen3vl_stage1_sft import _processor_sample
 from scripts.train_qwen3vl_stage1_sft import (
     _equal_train_shard,
     _optimizer_step_count,
@@ -58,3 +59,17 @@ def test_visual_sft_requires_vit_inputs():
 
     with pytest.raises(RuntimeError, match="missing visual tensors"):
         _require_visual_tensors({"input_ids": object()}, "example")
+
+
+def test_processor_preflight_sample_is_stable_and_spans_episodes():
+    examples = [
+        {"episode_id": str(index // 2), "window_index": index % 2}
+        for index in range(20)
+    ]
+
+    first = _processor_sample(examples, 5)
+    second = _processor_sample(list(reversed(examples)), 5)
+
+    assert first == second
+    assert len(first) == 5
+    assert len({item["episode_id"] for item in first}) > 1

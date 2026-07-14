@@ -67,7 +67,10 @@ def test_training_messages_normalize_file_uri_without_mutating_manifest():
 
     normalized = _messages_with_processor_image_paths(messages)
 
+    assert normalized[0]["content"] == [{"type": "text", "text": "system"}]
     assert normalized[1]["content"][0]["image"] == "/tmp/frame.png"
+    assert normalized[2]["content"] == [{"type": "text", "text": messages[2]["content"]}]
+    assert messages[0]["content"] == "system"
     assert messages[1]["content"][0]["image"] == "file:///tmp/frame.png"
 
 

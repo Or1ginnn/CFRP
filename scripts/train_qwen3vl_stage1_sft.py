@@ -501,13 +501,24 @@ def torch_equal_prefix(full_ids: Any, prompt_ids: Any) -> bool:
 
 
 def _messages_with_processor_image_paths(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert portable file URIs to paths accepted by the Qwen processor."""
+    """Normalize portable messages for old and new Qwen processor APIs.
+
+    The manifest keeps system and assistant text compact as strings, while
+    Transformers 5.6 expects every role to expose a list of content blocks.
+    Newer processors accept the block form too, so normalize at this runtime
+    boundary rather than version-gating the training environment.
+    """
 
     normalized = []
     for message in messages:
         content = message["content"]
         if not isinstance(content, list):
-            normalized.append(dict(message))
+            normalized.append(
+                {
+                    **message,
+                    "content": [{"type": "text", "text": str(content)}],
+                }
+            )
             continue
         blocks = []
         for block in content:

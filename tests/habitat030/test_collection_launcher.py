@@ -16,3 +16,11 @@ def test_full_r2r_shards_cover_every_episode_without_overlap():
         )
     ]
     assert covered == list(range(10819))
+
+
+def test_single_episode_shards_support_many_collection_workers():
+    shards = build_shards(128, 1)
+
+    assert len(shards) == 128
+    assert shards[63].name == "shard-0063"
+    assert shards[127].episode_offset == 127

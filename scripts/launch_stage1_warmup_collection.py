@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episode-count", type=int, default=10819)
     parser.add_argument("--shard-size", type=int, default=100)
     parser.add_argument("--gpus", default="0,1,2,3")
+    parser.add_argument(
+        "--workers-per-gpu",
+        type=int,
+        default=1,
+        help="Concurrent Habitat collector processes assigned to each GPU.",
+    )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max-steps", type=int, default=160)
     parser.add_argument("--max-visual-history", type=int, default=9)
@@ -62,6 +68,8 @@ def main() -> int:
     gpus = tuple(item.strip() for item in args.gpus.split(",") if item.strip())
     if not gpus or len(gpus) != len(set(gpus)):
         raise ValueError("--gpus must contain distinct GPU IDs")
+    if args.workers_per_gpu < 1:
+        raise ValueError("--workers-per-gpu must be positive")
     for path in (args.python, args.dataset_root, args.scenes_dir, args.config):
         if not Path(path).exists():
             raise FileNotFoundError(path)
@@ -84,6 +92,8 @@ def main() -> int:
             "episode_count": args.episode_count,
             "shard_size": args.shard_size,
             "gpus": list(gpus),
+            "workers_per_gpu": args.workers_per_gpu,
+            "total_workers": len(gpus) * args.workers_per_gpu,
             "seed": args.seed,
             "max_steps": args.max_steps,
             "max_visual_history": args.max_visual_history,
@@ -144,7 +154,16 @@ def main() -> int:
                 )
             pending.task_done()
 
-    threads = [threading.Thread(target=worker, args=(gpu,), daemon=False) for gpu in gpus]
+    threads = [
+        threading.Thread(
+            target=worker,
+            args=(gpu,),
+            name=f"collector-gpu-{gpu}-worker-{worker_index:02d}",
+            daemon=False,
+        )
+        for gpu in gpus
+        for worker_index in range(args.workers_per_gpu)
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:

@@ -23,7 +23,10 @@ from vlnce_server.habitat030 import (
     cfrp_action_from_habitat_oracle,
 )
 from vlnce_server.habitat030.r2r_dataset import load_r2r_dataset
-from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
+from vlnce_server.habitat030.r2r_environment import (
+    R2R_MAX_EPISODE_STEPS,
+    create_r2r_habitat_env,
+)
 from vlnce_server.habitat030.stage1_runner import (
     DEFAULT_MAX_ACTION_HISTORY,
     DEFAULT_MAX_VISUAL_HISTORY,
@@ -62,7 +65,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--split", default="train")
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--max-steps", type=int, default=160)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=R2R_MAX_EPISODE_STEPS,
+        help="Maximum executed Habitat primitive actions per episode.",
+    )
     parser.add_argument("--max-visual-history", type=int, default=DEFAULT_MAX_VISUAL_HISTORY)
     parser.add_argument("--visual-context-window", type=int, default=DEFAULT_VISUAL_CONTEXT_WINDOW)
     parser.add_argument("--max-action-history", type=int, default=DEFAULT_MAX_ACTION_HISTORY)
@@ -145,6 +153,7 @@ def _write_collection_status(
         "completed_episode_ids": list(completed_episode_ids),
         "seed": args.seed,
         "max_steps": args.max_steps,
+        "step_unit": "habitat_primitive_action",
         "max_visual_history": args.max_visual_history,
         "max_action_history": args.max_action_history,
         "oracle_policy": {

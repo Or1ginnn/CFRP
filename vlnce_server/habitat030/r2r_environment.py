@@ -10,6 +10,9 @@ from vlnce_server.qwen3vl.vision import HABITAT_RGB_HEIGHT, HABITAT_RGB_HFOV, HA
 from .r2r_dataset import R2REpisodeRecord, load_r2r_episode, make_habitat_dataset
 
 
+R2R_MAX_EPISODE_STEPS = 500
+
+
 def r2r_camera_overrides() -> List[str]:
     """Return the shared high-resolution R2R camera configuration."""
 
@@ -47,6 +50,7 @@ def create_r2r_habitat_env(
         f"habitat.dataset.scenes_dir={scenes_dir}",
         f"habitat.dataset.split={split}",
         "habitat.environment.iterator_options.shuffle=False",
+        f"habitat.environment.max_episode_steps={R2R_MAX_EPISODE_STEPS}",
     ]
     overrides.extend(r2r_camera_overrides())
     if seed is not None:

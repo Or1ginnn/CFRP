@@ -14,6 +14,12 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, List, Sequence
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from vlnce_server.habitat030.r2r_environment import R2R_MAX_EPISODE_STEPS
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -32,7 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers-per-rank", type=int, default=4)
     parser.add_argument("--base-port", type=int, default=8000)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.72)
-    parser.add_argument("--max-steps", type=int, default=160)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=R2R_MAX_EPISODE_STEPS,
+        help="Maximum executed Habitat primitive actions per episode.",
+    )
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument("--seed", type=int, default=123)
@@ -68,6 +79,8 @@ def main() -> int:
         "workers_per_rank": args.workers_per_rank,
         "gpu_memory_utilization": args.gpu_memory_utilization,
         "max_episodes_per_split": args.max_episodes_per_split,
+        "max_steps": args.max_steps,
+        "step_unit": "habitat_primitive_action",
         "model": str(Path(args.model).resolve()),
         "adapter": str(Path(args.adapter).resolve()),
         "started_at": int(time.time()),

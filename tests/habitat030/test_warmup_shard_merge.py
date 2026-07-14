@@ -13,6 +13,7 @@ def _make_shard(
     *,
     contract=None,
     temporal_history=None,
+    max_steps=500,
 ) -> Path:
     shard = root / name
     shard.mkdir()
@@ -22,7 +23,8 @@ def _make_shard(
         "status": "complete",
         "split": "train",
         "seed": 123,
-        "max_steps": 160,
+        "max_steps": max_steps,
+        "step_unit": "habitat_primitive_action",
         "max_visual_history": 6,
         "max_action_history": 8,
         "visual_contract": contract,
@@ -52,6 +54,7 @@ def test_merge_warmup_shards_writes_traceable_complete_manifest(tmp_path: Path):
         "recent_frame_count": 3,
     }
     assert len(result["source_shards"]) == 2
+    assert result["step_unit"] == "habitat_primitive_action"
     assert (tmp_path / "merged" / "stage1_warmup.jsonl").read_text().count("\n") == 3
 
 
@@ -84,3 +87,13 @@ def test_merge_warmup_shards_rejects_temporal_history_mismatch(tmp_path: Path):
 
     with pytest.raises(ValueError, match="temporal_visual_history"):
         merge_warmup_shards([first, second], tmp_path / "merged")
+
+
+def test_merge_accepts_completed_shards_with_different_step_caps(tmp_path: Path):
+    first = _make_shard(tmp_path, "shard-000", ["1"], max_steps=160)
+    second = _make_shard(tmp_path, "shard-001", ["2"], max_steps=500)
+
+    result = merge_warmup_shards([first, second], tmp_path / "merged")
+
+    assert result["max_steps"] == 500
+    assert result["source_max_steps"] == [160, 500]

@@ -24,6 +24,7 @@ def test_summarize_records_uses_rollout_metrics():
             "oracle_success": True,
             "invalid_output": False,
             "stop_correct": True,
+            "environment_steps": 2,
             "steps": [{}, {}],
         },
         {
@@ -32,7 +33,8 @@ def test_summarize_records_uses_rollout_metrics():
             "oracle_success": False,
             "invalid_output": True,
             "stop_correct": False,
-            "steps": [{}],
+            "environment_steps": 1,
+            "steps": [{}, {}, {}],
         },
     ]
 

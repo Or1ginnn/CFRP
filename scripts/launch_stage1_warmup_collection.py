@@ -13,8 +13,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from vlnce_server.habitat030.r2r_environment import R2R_MAX_EPISODE_STEPS
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,12 @@ def parse_args() -> argparse.Namespace:
         help="Concurrent Habitat collector processes assigned to each GPU.",
     )
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--max-steps", type=int, default=160)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=R2R_MAX_EPISODE_STEPS,
+        help="Maximum executed Habitat primitive actions per episode.",
+    )
     parser.add_argument("--max-visual-history", type=int, default=9)
     parser.add_argument("--max-action-history", type=int, default=8)
     parser.add_argument("--success-distance", type=float, default=3.0)
@@ -96,6 +104,7 @@ def main() -> int:
             "total_workers": len(gpus) * args.workers_per_gpu,
             "seed": args.seed,
             "max_steps": args.max_steps,
+            "step_unit": "habitat_primitive_action",
             "max_visual_history": args.max_visual_history,
             "max_action_history": args.max_action_history,
             "success_distance": args.success_distance,

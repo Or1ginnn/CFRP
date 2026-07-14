@@ -60,6 +60,7 @@ def merge_warmup_shards(shard_dirs: Sequence[Path], output_dir: Path) -> dict[st
         )
 
     reference = manifests[0]
+    source_max_steps = sorted({int(manifest["max_steps"]) for manifest in manifests})
     merged_manifest = {
         "schema": "cfrp.stage1.warmup.v1",
         "status": "complete",
@@ -67,9 +68,15 @@ def merge_warmup_shards(shard_dirs: Sequence[Path], output_dir: Path) -> dict[st
         "requested_episode_ids": completed_episode_ids,
         "completed_episode_ids": completed_episode_ids,
         "seed": reference["seed"],
-        "max_steps": reference["max_steps"],
+        # A completed trajectory is invariant to any larger collection cap.
+        # This permits short 160-step shards and 500-step repair shards to be
+        # merged without hiding which budgets produced the source artifacts.
+        "max_steps": max(source_max_steps),
+        "source_max_steps": source_max_steps,
+        "step_unit": _step_unit(reference),
         "max_visual_history": reference["max_visual_history"],
         "max_action_history": reference["max_action_history"],
+        "oracle_policy": reference.get("oracle_policy"),
         "visual_contract": reference["visual_contract"],
         "temporal_visual_history": reference.get("temporal_visual_history"),
         "source_shards": shard_summaries,
@@ -103,9 +110,9 @@ def _validate_shared_contract(manifests: Sequence[dict[str, Any]]) -> None:
     keys = (
         "split",
         "seed",
-        "max_steps",
         "max_visual_history",
         "max_action_history",
+        "oracle_policy",
         "visual_contract",
         "temporal_visual_history",
     )
@@ -113,6 +120,14 @@ def _validate_shared_contract(manifests: Sequence[dict[str, Any]]) -> None:
         for key in keys:
             if manifest.get(key) != reference.get(key):
                 raise ValueError(f"shard {index} has incompatible {key}")
+        if _step_unit(manifest) != _step_unit(reference):
+            raise ValueError(f"shard {index} has incompatible step_unit")
+
+
+def _step_unit(manifest: dict[str, Any]) -> str:
+    # Warm-up manifests created before the explicit field was introduced also
+    # counted one collector loop iteration per Habitat primitive action.
+    return str(manifest.get("step_unit", "habitat_primitive_action"))
 
 
 def _load_record_lines(path: Path) -> tuple[list[str], set[str]]:

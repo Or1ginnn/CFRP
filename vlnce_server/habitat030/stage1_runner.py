@@ -273,7 +273,7 @@ class Stage1EpisodeRunner:
         return tuple(self.trajectory)
 
     def run_with_policy(self, policy: object, max_steps: int) -> Tuple[Stage1TrajectoryStep, ...]:
-        """Run a policy for at most ``max_steps`` turns or until task STOP."""
+        """Execute at most ``max_steps`` Habitat primitives or until task STOP."""
 
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")

@@ -32,7 +32,10 @@ from scripts.habitat030_r2r_qwen_baseline import (
 )
 from vlnce_server.cfrp import CFRPProtocolError
 from vlnce_server.habitat030 import Habitat030NavigationEnvironment
-from vlnce_server.habitat030.r2r_environment import create_r2r_habitat_env
+from vlnce_server.habitat030.r2r_environment import (
+    R2R_MAX_EPISODE_STEPS,
+    create_r2r_habitat_env,
+)
 from vlnce_server.habitat030.stage1_runner import (
     DEFAULT_MAX_ACTION_HISTORY,
     DEFAULT_MAX_VISUAL_HISTORY,
@@ -84,7 +87,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="val_seen")
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--max-steps", type=int, default=160)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=R2R_MAX_EPISODE_STEPS,
+        help="Maximum executed Habitat primitive actions per episode.",
+    )
     parser.add_argument("--max-visual-history", type=int, default=DEFAULT_MAX_VISUAL_HISTORY)
     parser.add_argument("--max-action-history", type=int, default=DEFAULT_MAX_ACTION_HISTORY)
     parser.add_argument("--max-new-tokens", type=int, default=128)
@@ -137,6 +145,7 @@ def main() -> int:
         "config": {
             "workers": args.workers,
             "max_steps": args.max_steps,
+            "step_unit": "habitat_primitive_action",
             "max_visual_history": args.max_visual_history,
             "max_action_history": args.max_action_history,
             "success_distance": args.success_distance,
@@ -248,23 +257,50 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         )
         steps: List[Dict[str, Any]] = []
         minimum_distance = _distance(wrapper.metrics())
-        end_reason = "max_steps"
-        for turn_index in range(job.max_steps):
+        end_reason = "max_environment_steps"
+        model_decision_index = -1
+        for environment_step_index in range(job.max_steps):
+            queried_model = runner.needs_model_decision
+            if queried_model:
+                model_decision_index += 1
             try:
-                step = runner.step_with_policy(client, turn_index=turn_index)
+                step = runner.step_with_policy(
+                    client, turn_index=environment_step_index
+                )
             except CFRPProtocolError as exc:
                 end_reason = "invalid_xml_or_action"
-                steps.append({"turn_index": turn_index, "protocol_error": str(exc)})
+                steps.append(
+                    {
+                        "turn_index": environment_step_index,
+                        "environment_step_index": environment_step_index,
+                        "model_decision_index": model_decision_index,
+                        "queried_model": queried_model,
+                        "protocol_error": str(exc),
+                    }
+                )
                 break
             except Exception as exc:
                 end_reason = "model_error"
                 steps.append(
-                    {"turn_index": turn_index, "model_error": "{}: {}".format(type(exc).__name__, exc)}
+                    {
+                        "turn_index": environment_step_index,
+                        "environment_step_index": environment_step_index,
+                        "model_decision_index": model_decision_index,
+                        "queried_model": queried_model,
+                        "model_error": "{}: {}".format(
+                            type(exc).__name__, exc
+                        ),
+                    }
                 )
                 break
             minimum_distance = _minimum(minimum_distance, _distance(step.metrics))
             step_record = {
-                "turn_index": turn_index,
+                # Kept for artifact compatibility; one turn is one executed
+                # Habitat primitive in the current Stage 1 runner.
+                "turn_index": environment_step_index,
+                "environment_step_index": environment_step_index,
+                "model_decision_index": model_decision_index,
+                "queried_model": queried_model,
                 "raw_xml": step.raw_xml,
                 "progress": step.progress,
                 "subgoal": step.subgoal,
@@ -287,7 +323,9 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
             if job.save_frames:
                 frame_history = frame_history.append(
                     _save_current_frame(
-                        runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1
+                        runner.history.visual_history[-1].rgb,
+                        frames_dir,
+                        environment_step_index + 1,
                     )
                 )
             if job.save_video:
@@ -299,11 +337,14 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 break
 
         final_metrics = wrapper.metrics()
+        environment_steps = sum("action" in item for item in steps)
         result = {
             "episode_id": job.episode_id,
             "scene_id": record.scene_id,
             "instruction": record.instruction_text,
             "end_reason": end_reason,
+            "environment_steps": environment_steps,
+            "model_decisions": model_decision_index + 1,
             "steps": steps,
             "final_metrics": _metrics_to_dict(final_metrics),
             "navigation_error": final_metrics.distance_to_goal,
@@ -393,7 +434,8 @@ def _append_rank_artifacts(run_dir: Path, rank: int, result: Dict[str, Any]) -> 
         "spl": float(metrics.get("spl") or 0.0),
         "os": float(bool(result["oracle_success"])),
         "ne": float(result["navigation_error"] or 0.0),
-        "steps": len(result["steps"]),
+        "steps": int(result["environment_steps"]),
+        "model_decisions": int(result["model_decisions"]),
         "episode_instruction": result["instruction"],
         "end_reason": result["end_reason"],
         "video_path": result.get("video_path"),

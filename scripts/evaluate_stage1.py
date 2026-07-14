@@ -23,8 +23,13 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import URLError
 from urllib.request import urlopen
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from vlnce_server.habitat030.r2r_environment import R2R_MAX_EPISODE_STEPS
+
+
 DEFAULT_DATASET_ROOT = ROOT / "data/datasets/R2R_VLNCE_v1-3_preprocessed"
 DEFAULT_SCENES_DIR = ROOT / "data/scene_datasets"
 DEFAULT_CONFIG_CANDIDATES = (
@@ -67,7 +72,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument("--hf-home", default=str(ROOT / "cache/huggingface"))
-    parser.add_argument("--max-steps", type=int, default=160)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=R2R_MAX_EPISODE_STEPS,
+        help="Maximum executed Habitat primitive actions per episode.",
+    )
     parser.add_argument("--max-visual-history", type=int, default=9)
     parser.add_argument("--max-action-history", type=int, default=8)
     parser.add_argument("--max-new-tokens", type=int, default=128)
@@ -225,6 +235,7 @@ def _write_launch_manifest(
         "workers_per_gpu": args.workers_per_gpu,
         "repeat": 1,
         "max_steps": args.max_steps,
+        "step_unit": "habitat_primitive_action",
         "max_visual_history": args.max_visual_history,
         "max_action_history": args.max_action_history,
         "save_video": args.save_video,
@@ -561,8 +572,16 @@ def _summarize_records(records: Sequence[Dict[str, Any]]) -> Dict[str, float]:
             float(bool(record.get("stop_correct"))) for record in records
         )
         / count,
-        "average_steps": sum(len(record.get("steps", ())) for record in records) / count,
+        "average_steps": sum(_record_environment_steps(record) for record in records)
+        / count,
     }
+
+
+def _record_environment_steps(record: Dict[str, Any]) -> int:
+    declared = record.get("environment_steps")
+    if declared is not None:
+        return int(declared)
+    return len(record.get("steps", ()))
 
 
 if __name__ == "__main__":

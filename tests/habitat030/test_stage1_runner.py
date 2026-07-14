@@ -170,6 +170,21 @@ def test_policy_runner_executes_a_chunk_before_requesting_the_next_model_output(
     assert len(policy.requests) == 2
 
 
+def test_policy_step_budget_counts_executed_primitives_not_model_requests():
+    runner = Stage1EpisodeRunner(FakeWrapper(), plan())
+    policy = FakeStage1Policy(
+        (
+            "<progress>hold</progress><subgoal>scripted subgoal</subgoal>"
+            "<action>MOVE_FORWARD, TURN_LEFT, MOVE_FORWARD</action>",
+        )
+    )
+
+    trajectory = runner.run_with_policy(policy, max_steps=2)
+
+    assert [step.action for step in trajectory] == ["MOVE_FORWARD", "TURN_LEFT"]
+    assert len(policy.requests) == 1
+
+
 def test_model_request_uses_observation_actions_when_wrapper_does_not_expose_them():
     wrapper = FakeWrapper()
     runner = Stage1EpisodeRunner(wrapper, plan())

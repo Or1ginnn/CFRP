@@ -261,10 +261,19 @@ def summarize(episodes: Sequence[dict[str, Any]]) -> dict[str, float]:
         "invalid_output_step_rate": sum(
             float(bool(item["invalid_output"])) for item in episodes
         )
-        / sum(len(item["steps"]) for item in episodes),
-        "average_steps": _mean(float(len(item["steps"])) for item in episodes),
+        / max(1, sum(_episode_step_count(item) for item in episodes)),
+        "average_steps": _mean(float(_episode_step_count(item)) for item in episodes),
         "stop_correct_rate": _mean(float(bool(item["stop_correct"])) for item in episodes),
     }
+
+
+def _episode_step_count(episode: dict[str, Any]) -> int:
+    """Count executed Habitat primitives, excluding model-error records."""
+
+    declared = episode.get("environment_steps")
+    if declared is not None:
+        return int(declared)
+    return sum("action" in step for step in episode["steps"])
 
 
 def compare_repetitions(repetitions: Sequence[dict[str, Any]]) -> dict[str, Any]:

@@ -162,7 +162,7 @@ def _validate_temporal_history_paths(
     raw_paths = tuple(frames_dir / "frame-{:04d}.npy".format(index) for index in range(request.turn_index + 1))
     expected = select_temporal_history(raw_paths)
     if paths != expected:
-        raise ValueError(f"line {line_number}: visual history does not match 6+3 temporal sampling")
+        raise ValueError(f"line {line_number}: visual history does not match the slow-fast temporal contract")
 
 
 def _validate_frames(

@@ -15,14 +15,13 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.habitat030_r2r_qwen_baseline import (
-    _append_capped,
     _distance,
     _metrics_to_dict,
     _minimum,
@@ -42,7 +41,7 @@ from vlnce_server.habitat030.stage1_runner import (
 )
 from vlnce_server.habitat030.temporal_history import (
     DEFAULT_VISUAL_CONTEXT_WINDOW,
-    select_temporal_history,
+    SlowFastVisualHistory,
 )
 from vlnce_server.qwen3vl import VLLMStage1Client
 
@@ -241,7 +240,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         _write_sim_check_frame(
             Path(job.run_dir), job.rank, runner.history.visual_history[-1].rgb
         )
-        frame_context_paths = _initial_frame_paths(runner, frames_dir, job.save_frames)
+        frame_history = _initial_frame_history(runner, frames_dir, job.save_frames)
         video_frames = (
             [_visualization_frame(runner.history.visual_history[-1].rgb, wrapper)]
             if job.save_video
@@ -275,7 +274,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 "history": {
                     "visual_count": step.history_visual_count,
                     "action_count": step.history_action_count,
-                    "rgb_paths": list(select_temporal_history(frame_context_paths)),
+                    "rgb_paths": list(frame_history.visible) if frame_history is not None else [],
                 },
                 "metrics": _metrics_to_dict(step.metrics),
                 "agent_pose": _pose_to_dict(wrapper.agent_pose()),
@@ -284,12 +283,10 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 step_record["oracle_only"] = _oracle_to_dict(wrapper.privileged_state())
             steps.append(step_record)
             if job.save_frames:
-                frame_context_paths = _append_capped(
-                    frame_context_paths,
+                frame_history = frame_history.append(
                     _save_current_frame(
                         runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1
-                    ),
-                    DEFAULT_VISUAL_CONTEXT_WINDOW,
+                    )
                 )
             if job.save_video:
                 video_frames.append(
@@ -332,12 +329,14 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         wrapper.close()
 
 
-def _initial_frame_paths(
+def _initial_frame_history(
     runner: Stage1EpisodeRunner, frames_dir: Path, save_frames: bool
-) -> List[str]:
+) -> Optional[SlowFastVisualHistory[str]]:
     if not save_frames:
-        return []
-    return [_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0)]
+        return None
+    return SlowFastVisualHistory[str].create(
+        context_window=DEFAULT_VISUAL_CONTEXT_WINDOW
+    ).reset(_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0))
 
 
 def _visualization_frame(rgb: Any, wrapper: Habitat030NavigationEnvironment) -> Any:

@@ -83,8 +83,8 @@ def _frame_label(index: int, total: int) -> str:
     if total == DEFAULT_MODEL_VISUAL_FRAME_COUNT:
         if index <= DEFAULT_HISTORY_ANCHOR_COUNT:
             return (
-                f"Route-history anchor {index} of {DEFAULT_HISTORY_ANCHOR_COUNT} "
-                "(uniformly sampled, oldest to newest):"
+                f"Slow-memory keyframe {index} of {DEFAULT_HISTORY_ANCHOR_COUNT} "
+                "(stable route context, oldest to newest):"
             )
         recent_index = index - DEFAULT_HISTORY_ANCHOR_COUNT
         return (

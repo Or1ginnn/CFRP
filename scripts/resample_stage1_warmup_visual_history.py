@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 from vlnce_server.habitat030.temporal_history import (
     DEFAULT_MODEL_VISUAL_FRAME_COUNT,
     DEFAULT_VISUAL_CONTEXT_WINDOW,
-    select_temporal_history,
+    SlowFastVisualHistory,
     temporal_history_spec,
 )
 
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def resample_warmup_directory(input_dir: Path, output_dir: Path) -> dict[str, Any]:
-    """Write a canonical 6-anchor + 3-recent copy of a complete warm-up set."""
+    """Write a canonical slow-memory + recent-frame copy of complete warm-up data."""
 
     source_manifest = _load_manifest(input_dir / "manifest.json")
     source_records = input_dir / "stage1_warmup.jsonl"
@@ -84,13 +84,12 @@ def resample_warmup_record(record: Mapping[str, Any], *, line_number: int = 0) -
     missing = [str(path) for path in raw_paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(_prefix(line_number) + "missing retained raw frames: " + missing[0])
-    request["visual_history_paths"] = [
-        str(path)
-        for path in select_temporal_history(
-            raw_paths,
-            context_window=DEFAULT_VISUAL_CONTEXT_WINDOW,
-        )
-    ]
+    path_history = SlowFastVisualHistory[Path].create(
+        context_window=DEFAULT_VISUAL_CONTEXT_WINDOW
+    )
+    for path in raw_paths:
+        path_history = path_history.reset(path) if not path_history.context else path_history.append(path)
+    request["visual_history_paths"] = [str(path) for path in path_history.visible]
     copied["model_input"] = request
     return copied
 

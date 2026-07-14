@@ -32,7 +32,7 @@ from vlnce_server.habitat030.stage1_runner import (
 from vlnce_server.habitat030.temporal_history import (
     DEFAULT_MODEL_VISUAL_FRAME_COUNT,
     DEFAULT_VISUAL_CONTEXT_WINDOW,
-    select_temporal_history,
+    SlowFastVisualHistory,
     temporal_history_spec,
 )
 from vlnce_server.qwen3vl.vision import (
@@ -207,7 +207,12 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
             args.max_action_history,
             visual_context_window=args.visual_context_window,
         ).reset(observation)
-        frame_paths = [_save_frame(observation.rgb, frames_dir, 0)]
+        path_history = SlowFastVisualHistory[str].create(
+            context_window=args.visual_context_window,
+            history_anchor_count=history.history_anchor_count,
+            recent_contiguous_count=history.recent_contiguous_count,
+            slow_memory_update_interval=history.slow_memory_update_interval,
+        ).reset(_save_frame(observation.rgb, frames_dir, 0))
         task_success_distance = _task_success_distance(env, args.success_distance)
         follower_goal_radius = (
             task_success_distance
@@ -228,12 +233,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                 {
                     "turn_index": turn_index,
                     "instruction": observation.instruction,
-                    "visual_history_paths": select_temporal_history(
-                        frame_paths,
-                        context_window=args.visual_context_window,
-                        history_anchor_count=history.history_anchor_count,
-                        recent_contiguous_count=history.recent_contiguous_count,
-                    ),
+                    "visual_history_paths": path_history.visible,
                     "action_history": history.action_history,
                     "allowed_actions": observation.allowed_actions,
                     "action": action,
@@ -250,10 +250,8 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
             step = wrapper.step(action)
             observation = step.observation
             history = history.append(observation, action)
-            frame_paths = _append_capped(
-                frame_paths,
-                _save_frame(observation.rgb, frames_dir, turn_index + 1),
-                args.visual_context_window,
+            path_history = path_history.append(
+                _save_frame(observation.rgb, frames_dir, turn_index + 1)
             )
             if step.episode_over or action == "STOP":
                 success = bool(step.metrics.success and step.metrics.success >= 1.0)
@@ -279,10 +277,6 @@ def _save_frame(rgb: Any, frames_dir: Path, frame_index: int) -> str:
     path = frames_dir / f"frame-{frame_index:04d}.npy"
     np.save(path, rgb)
     return str(path)
-
-
-def _append_capped(values: Sequence[str], value: str, limit: int) -> list[str]:
-    return list((tuple(values) + (value,))[-limit:])
 
 
 def _label_trajectory(record: Any, raw_steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:

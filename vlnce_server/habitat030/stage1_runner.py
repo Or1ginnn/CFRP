@@ -16,8 +16,9 @@ from .temporal_history import (
     DEFAULT_HISTORY_ANCHOR_COUNT,
     DEFAULT_MODEL_VISUAL_FRAME_COUNT,
     DEFAULT_RECENT_CONTIGUOUS_COUNT,
+    DEFAULT_SLOW_MEMORY_UPDATE_INTERVAL,
     DEFAULT_VISUAL_CONTEXT_WINDOW,
-    select_temporal_history,
+    SlowFastVisualHistory,
 )
 
 
@@ -27,15 +28,16 @@ DEFAULT_MAX_ACTION_HISTORY = 8
 
 @dataclass(frozen=True)
 class FixedHistoryBuffer:
-    """Raw rolling context plus the compact model-visible temporal selection."""
+    """Slow-fast visual state plus a bounded executed-action history."""
 
-    visual_context: Tuple[NavigationObservation, ...] = tuple()
+    visual_state: SlowFastVisualHistory[NavigationObservation] = SlowFastVisualHistory()
     action_history: Tuple[str, ...] = tuple()
     max_visual: int = DEFAULT_MAX_VISUAL_HISTORY
     max_action: int = DEFAULT_MAX_ACTION_HISTORY
     visual_context_window: int = DEFAULT_VISUAL_CONTEXT_WINDOW
     history_anchor_count: int = DEFAULT_HISTORY_ANCHOR_COUNT
     recent_contiguous_count: int = DEFAULT_RECENT_CONTIGUOUS_COUNT
+    slow_memory_update_interval: int = DEFAULT_SLOW_MEMORY_UPDATE_INTERVAL
 
     @classmethod
     def create(
@@ -46,6 +48,7 @@ class FixedHistoryBuffer:
         visual_context_window: int = DEFAULT_VISUAL_CONTEXT_WINDOW,
         history_anchor_count: Optional[int] = None,
         recent_contiguous_count: Optional[int] = None,
+        slow_memory_update_interval: int = DEFAULT_SLOW_MEMORY_UPDATE_INTERVAL,
     ) -> "FixedHistoryBuffer":
         if max_visual < 1:
             raise ValueError("max_visual must be at least 1")
@@ -67,35 +70,41 @@ class FixedHistoryBuffer:
             raise ValueError("invalid visual history composition")
         if max_visual != history_anchor_count + recent_contiguous_count:
             raise ValueError("max_visual must equal history anchors plus recent frames")
-        if visual_context_window < max_visual:
-            raise ValueError("visual_context_window must fit the model-visible history")
+        visual_state = SlowFastVisualHistory[NavigationObservation].create(
+            context_window=visual_context_window,
+            history_anchor_count=history_anchor_count,
+            recent_contiguous_count=recent_contiguous_count,
+            slow_memory_update_interval=slow_memory_update_interval,
+        )
         return cls(
             max_visual=max_visual,
             max_action=max_action,
-            visual_context_window=visual_context_window,
-            history_anchor_count=history_anchor_count,
-            recent_contiguous_count=recent_contiguous_count,
+            visual_state=visual_state,
+            visual_context_window=visual_state.context_window,
+            history_anchor_count=visual_state.history_anchor_count,
+            recent_contiguous_count=visual_state.recent_contiguous_count,
+            slow_memory_update_interval=visual_state.slow_memory_update_interval,
         )
 
     @property
     def visual_history(self) -> Tuple[NavigationObservation, ...]:
-        return select_temporal_history(
-            self.visual_context,
-            context_window=self.visual_context_window,
-            history_anchor_count=self.history_anchor_count,
-            recent_contiguous_count=self.recent_contiguous_count,
-        )
+        return self.visual_state.visible
+
+    @property
+    def visual_context(self) -> Tuple[NavigationObservation, ...]:
+        return self.visual_state.context
 
     def reset(self, observation: NavigationObservation) -> "FixedHistoryBuffer":
         _assert_oracle_free_observation(observation)
         return FixedHistoryBuffer(
-            visual_context=(observation,),
+            visual_state=self.visual_state.reset(observation),
             action_history=tuple(),
             max_visual=self.max_visual,
             max_action=self.max_action,
             visual_context_window=self.visual_context_window,
             history_anchor_count=self.history_anchor_count,
             recent_contiguous_count=self.recent_contiguous_count,
+            slow_memory_update_interval=self.slow_memory_update_interval,
         )
 
     def append(
@@ -105,13 +114,14 @@ class FixedHistoryBuffer:
     ) -> "FixedHistoryBuffer":
         _assert_oracle_free_observation(observation)
         return FixedHistoryBuffer(
-            visual_context=(self.visual_context + (observation,))[-self.visual_context_window :],
+            visual_state=self.visual_state.append(observation),
             action_history=(self.action_history + (action,))[-self.max_action :],
             max_visual=self.max_visual,
             max_action=self.max_action,
             visual_context_window=self.visual_context_window,
             history_anchor_count=self.history_anchor_count,
             recent_contiguous_count=self.recent_contiguous_count,
+            slow_memory_update_interval=self.slow_memory_update_interval,
         )
 
 

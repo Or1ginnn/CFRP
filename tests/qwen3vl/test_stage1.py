@@ -56,8 +56,8 @@ def test_stage1_messages_label_the_nine_frame_temporal_contract():
 
     content = build_stage1_messages(nine_frame_request)[1]["content"]
     labels = [item["text"] for item in content if item["type"] == "text"][1:]
-    assert "Route-history anchor 1 of 6" in labels[0]
-    assert "Route-history anchor 6 of 6" in labels[5]
+    assert "Slow-memory keyframe 1 of 6" in labels[0]
+    assert "Slow-memory keyframe 6 of 6" in labels[5]
     assert "Recent consecutive observation 1 of 3" in labels[6]
     assert "Recent consecutive observation 3 of 3" in labels[8]
 

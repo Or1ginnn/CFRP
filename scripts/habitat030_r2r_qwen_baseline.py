@@ -34,7 +34,7 @@ from vlnce_server.habitat030.stage1_runner import (
 )
 from vlnce_server.habitat030.temporal_history import (
     DEFAULT_VISUAL_CONTEXT_WINDOW,
-    select_temporal_history,
+    SlowFastVisualHistory,
 )
 
 
@@ -146,7 +146,9 @@ def run_episode(
             history=FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history),
         )
         runner.reset()
-        frame_context_paths = [_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0)]
+        frame_history = SlowFastVisualHistory[str].create(
+            context_window=DEFAULT_VISUAL_CONTEXT_WINDOW
+        ).reset(_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0))
         steps = []
         minimum_distance = _distance(wrapper.metrics())
         end_reason = "max_steps"
@@ -162,7 +164,7 @@ def run_episode(
                 turn_index=turn_index,
                 instruction=latest.instruction,
                 current_plan=current_plan,
-                visual_history_paths=select_temporal_history(frame_context_paths),
+                visual_history_paths=frame_history.visible,
                 action_history=runner.history.action_history,
                 allowed_actions=latest.allowed_actions,
             )
@@ -209,16 +211,14 @@ def run_episode(
                     "history": {
                         "visual_count": step.history_visual_count,
                         "action_count": step.history_action_count,
-                        "rgb_paths": list(select_temporal_history(frame_context_paths)),
+                        "rgb_paths": list(frame_history.visible),
                     },
                     "metrics": _metrics_to_dict(step.metrics),
                     "oracle_only": _oracle_to_dict(oracle_state),
                 }
             )
-            frame_context_paths = _append_capped(
-                frame_context_paths,
-                _save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1),
-                DEFAULT_VISUAL_CONTEXT_WINDOW,
+            frame_history = frame_history.append(
+                _save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1)
             )
             if step.episode_over or step.action == "STOP":
                 end_reason = "stop"
@@ -322,10 +322,6 @@ def _save_current_frame(rgb: Any, frames_dir: Path, frame_index: int) -> str:
     path = frames_dir / f"frame-{frame_index:04d}.npy"
     np.save(path, rgb)
     return str(path)
-
-
-def _append_capped(values: Sequence[str], value: str, limit: int) -> list[str]:
-    return list((tuple(values) + (value,))[-limit:])
 
 
 def _metrics_to_dict(metrics: Any) -> dict[str, Any]:

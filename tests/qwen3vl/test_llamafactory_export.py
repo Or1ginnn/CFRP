@@ -11,4 +11,6 @@ def test_llamafactory_config_enables_wandb_for_formal_runs(tmp_path: Path):
     config = path.read_text(encoding="utf-8")
     assert "report_to: wandb" in config
     assert "run_name: stage1-pilot" in config
+    assert "lora_rank: 64" in config
+    assert "lora_alpha: 128" in config
     assert "gradient_checkpointing: true" in config

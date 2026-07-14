@@ -43,6 +43,9 @@ from vlnce_server.qwen3vl.vision import (
 )
 
 
+CONSERVATIVE_ORACLE_GOAL_RADIUS = 0.2
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True)
@@ -229,6 +232,39 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
         for turn_index in range(args.max_steps):
             raw_action = follower.get_next_action(env.current_episode.goals[0].position)
             action = cfrp_action_from_habitat_oracle(raw_action)
+            distance_to_goal = wrapper.metrics().distance_to_goal
+            if _oracle_stop_requires_fallback(
+                action, distance_to_goal, task_success_distance
+            ):
+                fallback_radius = min(
+                    follower_goal_radius, CONSERVATIVE_ORACLE_GOAL_RADIUS
+                )
+                if fallback_radius >= follower_goal_radius:
+                    raise RuntimeError(
+                        f"oracle STOP remained premature for episode {episode_id}; "
+                        f"task_success_distance={task_success_distance} "
+                        f"follower_goal_radius={follower_goal_radius} "
+                        f"distance_to_goal={distance_to_goal}"
+                    )
+                follower_goal_radius = fallback_radius
+                follower = ShortestPathFollower(
+                    sim=env.sim,
+                    goal_radius=follower_goal_radius,
+                    return_one_hot=False,
+                )
+                raw_action = follower.get_next_action(
+                    env.current_episode.goals[0].position
+                )
+                action = cfrp_action_from_habitat_oracle(raw_action)
+                if _oracle_stop_requires_fallback(
+                    action, distance_to_goal, task_success_distance
+                ):
+                    raise RuntimeError(
+                        f"strict oracle STOP was not task-valid for episode {episode_id}; "
+                        f"task_success_distance={task_success_distance} "
+                        f"follower_goal_radius={follower_goal_radius} "
+                        f"distance_to_goal={distance_to_goal}"
+                    )
             oracle_state = wrapper.privileged_state()
             raw_steps.append(
                 {
@@ -340,6 +376,16 @@ def _task_success_distance(env: Any, fallback: float) -> float:
     if value is None:
         return fallback
     return float(value)
+
+
+def _oracle_stop_requires_fallback(
+    action: str, distance_to_goal: float | None, success_distance: float
+) -> bool:
+    """Reject follower STOP until Habitat's task distance satisfies R2R success."""
+
+    return action == "STOP" and (
+        distance_to_goal is None or distance_to_goal > success_distance
+    )
 
 
 if __name__ == "__main__":

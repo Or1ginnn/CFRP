@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.habitat030_collect_stage1_warmup import _select_episode_ids, _write_collection_status
+from scripts.habitat030_collect_stage1_warmup import (
+    _oracle_stop_requires_fallback,
+    _select_episode_ids,
+    _write_collection_status,
+)
 
 
 def test_select_episode_ids_keeps_explicit_order():
@@ -65,3 +69,14 @@ def test_failed_collection_writes_status_instead_of_complete_manifest(tmp_path: 
     status = json.loads((tmp_path / "collection_status.json").read_text(encoding="utf-8"))
     assert status["status"] == "failed"
     assert status["completed_episode_ids"] == ["1"]
+
+
+def test_oracle_stop_falls_back_outside_task_success_distance():
+    assert _oracle_stop_requires_fallback("STOP", 4.065, 3.0)
+    assert _oracle_stop_requires_fallback("STOP", None, 3.0)
+
+
+def test_oracle_stop_is_kept_inside_task_success_distance():
+    assert not _oracle_stop_requires_fallback("STOP", 3.0, 3.0)
+    assert not _oracle_stop_requires_fallback("STOP", 2.9, 3.0)
+    assert not _oracle_stop_requires_fallback("MOVE_FORWARD", 4.0, 3.0)

@@ -29,6 +29,8 @@ def audit_stage1_warmup(
     if max_visual_history < 1 or max_action_history < 0:
         raise ValueError("invalid history budgets in warm-up manifest")
     expected_frame_size = _expected_frame_size(manifest)
+    temporal_spec = manifest.get("temporal_visual_history")
+    _validate_temporal_spec(temporal_spec, max_visual_history)
 
     by_episode: dict[str, list[tuple[Stage1RolloutRequest, Any, Mapping[str, Any]]]] = defaultdict(list)
     seen_turns: set[tuple[str, int]] = set()
@@ -60,6 +62,7 @@ def audit_stage1_warmup(
             raise ValueError(f"line {line_number}: action history exceeds manifest budget")
         if check_frames:
             _validate_frames(request.visual_history_paths, line_number, expected_frame_size)
+        _validate_temporal_history_paths(request, temporal_spec, line_number)
         by_episode[request.episode_id].append((request, output, oracle_only))
         action_counts[output.action] += 1
         progress_counts[str(output.progress)] += 1
@@ -124,6 +127,42 @@ def _expected_frame_size(manifest: Mapping[str, Any]) -> tuple[int, int] | None:
     if not isinstance(size, Sequence) or len(size) != 2:
         raise ValueError("visual contract must contain habitat_rgb_size=[width, height]")
     return (int(size[0]), int(size[1]))
+
+
+def _validate_temporal_spec(value: Any, max_visual_history: int) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise ValueError("temporal_visual_history must be an object")
+    # Import lazily: Habitat's Stage 1 runner imports CFRP, while this audit
+    # is only invoked after the package graph has finished initializing.
+    from vlnce_server.habitat030.temporal_history import (
+        DEFAULT_MODEL_VISUAL_FRAME_COUNT,
+        temporal_history_spec,
+    )
+
+    expected = temporal_history_spec()
+    if dict(value) != expected:
+        raise ValueError("warm-up temporal visual history does not match the CFRP 6+3 contract")
+    if max_visual_history != DEFAULT_MODEL_VISUAL_FRAME_COUNT:
+        raise ValueError("6+3 temporal visual history requires max_visual_history=9")
+
+
+def _validate_temporal_history_paths(
+    request: Stage1RolloutRequest, temporal_spec: Any, line_number: int
+) -> None:
+    if temporal_spec is None:
+        return
+    from vlnce_server.habitat030.temporal_history import select_temporal_history
+
+    paths = tuple(Path(path) for path in request.visual_history_paths)
+    if not paths:
+        raise ValueError(f"line {line_number}: missing temporal visual history")
+    frames_dir = paths[-1].parent
+    raw_paths = tuple(frames_dir / "frame-{:04d}.npy".format(index) for index in range(request.turn_index + 1))
+    expected = select_temporal_history(raw_paths)
+    if paths != expected:
+        raise ValueError(f"line {line_number}: visual history does not match 6+3 temporal sampling")
 
 
 def _validate_frames(

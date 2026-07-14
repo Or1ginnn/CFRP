@@ -14,6 +14,11 @@ from vlnce_server.cfrp import PlanState
 from vlnce_server.cfrp.prompts import STAGE1_SYSTEM_PROMPT
 
 from .vision import prepare_qwen3vl_image, qwen3vl_processor_kwargs
+from vlnce_server.habitat030.temporal_history import (
+    DEFAULT_HISTORY_ANCHOR_COUNT,
+    DEFAULT_MODEL_VISUAL_FRAME_COUNT,
+    DEFAULT_RECENT_CONTIGUOUS_COUNT,
+)
 
 
 DEFAULT_QWEN3_VL_MODEL = "Qwen/Qwen3-VL-4B-Instruct"
@@ -61,7 +66,7 @@ def build_stage1_messages(request: Stage1ModelRequest) -> list[dict[str, Any]]:
         content.append(
             {
                 "type": "text",
-                "text": f"Observation frame {index} of {len(request.visual_history)} (oldest to newest):",
+                "text": _frame_label(index, len(request.visual_history)),
             }
         )
         content.append({"type": "image", "image": prepare_qwen3vl_image(rgb)})
@@ -70,6 +75,23 @@ def build_stage1_messages(request: Stage1ModelRequest) -> list[dict[str, Any]]:
         {"role": "system", "content": STAGE1_SYSTEM_PROMPT},
         {"role": "user", "content": content},
     ]
+
+
+def _frame_label(index: int, total: int) -> str:
+    """Describe the temporal role without leaking any privileged state."""
+
+    if total == DEFAULT_MODEL_VISUAL_FRAME_COUNT:
+        if index <= DEFAULT_HISTORY_ANCHOR_COUNT:
+            return (
+                f"Route-history anchor {index} of {DEFAULT_HISTORY_ANCHOR_COUNT} "
+                "(uniformly sampled, oldest to newest):"
+            )
+        recent_index = index - DEFAULT_HISTORY_ANCHOR_COUNT
+        return (
+            f"Recent consecutive observation {recent_index} of "
+            f"{DEFAULT_RECENT_CONTIGUOUS_COUNT} (oldest to newest):"
+        )
+    return f"Observation frame {index} of {total} (oldest to newest):"
 
 
 class Qwen3VLStage1Policy:

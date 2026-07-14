@@ -40,6 +40,10 @@ from vlnce_server.habitat030.stage1_runner import (
     FixedHistoryBuffer,
     Stage1EpisodeRunner,
 )
+from vlnce_server.habitat030.temporal_history import (
+    DEFAULT_VISUAL_CONTEXT_WINDOW,
+    select_temporal_history,
+)
 from vlnce_server.qwen3vl import VLLMStage1Client
 
 
@@ -237,7 +241,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         _write_sim_check_frame(
             Path(job.run_dir), job.rank, runner.history.visual_history[-1].rgb
         )
-        frame_paths = _initial_frame_paths(runner, frames_dir, job.save_frames)
+        frame_context_paths = _initial_frame_paths(runner, frames_dir, job.save_frames)
         video_frames = (
             [_visualization_frame(runner.history.visual_history[-1].rgb, wrapper)]
             if job.save_video
@@ -271,7 +275,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 "history": {
                     "visual_count": step.history_visual_count,
                     "action_count": step.history_action_count,
-                    "rgb_paths": list(frame_paths),
+                    "rgb_paths": list(select_temporal_history(frame_context_paths)),
                 },
                 "metrics": _metrics_to_dict(step.metrics),
                 "agent_pose": _pose_to_dict(wrapper.agent_pose()),
@@ -280,12 +284,12 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 step_record["oracle_only"] = _oracle_to_dict(wrapper.privileged_state())
             steps.append(step_record)
             if job.save_frames:
-                frame_paths = _append_capped(
-                    frame_paths,
+                frame_context_paths = _append_capped(
+                    frame_context_paths,
                     _save_current_frame(
                         runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1
                     ),
-                    job.max_visual_history,
+                    DEFAULT_VISUAL_CONTEXT_WINDOW,
                 )
             if job.save_video:
                 video_frames.append(

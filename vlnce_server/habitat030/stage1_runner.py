@@ -12,40 +12,90 @@ from vlnce_server.cfrp import (
 )
 
 from .records import NavigationMetrics, NavigationObservation
+from .temporal_history import (
+    DEFAULT_HISTORY_ANCHOR_COUNT,
+    DEFAULT_MODEL_VISUAL_FRAME_COUNT,
+    DEFAULT_RECENT_CONTIGUOUS_COUNT,
+    DEFAULT_VISUAL_CONTEXT_WINDOW,
+    select_temporal_history,
+)
 
 
-DEFAULT_MAX_VISUAL_HISTORY = 6
+DEFAULT_MAX_VISUAL_HISTORY = DEFAULT_MODEL_VISUAL_FRAME_COUNT
 DEFAULT_MAX_ACTION_HISTORY = 8
 
 
 @dataclass(frozen=True)
 class FixedHistoryBuffer:
-    """Model-visible fixed-window observation/action history."""
+    """Raw rolling context plus the compact model-visible temporal selection."""
 
-    visual_history: Tuple[NavigationObservation, ...] = tuple()
+    visual_context: Tuple[NavigationObservation, ...] = tuple()
     action_history: Tuple[str, ...] = tuple()
     max_visual: int = DEFAULT_MAX_VISUAL_HISTORY
     max_action: int = DEFAULT_MAX_ACTION_HISTORY
+    visual_context_window: int = DEFAULT_VISUAL_CONTEXT_WINDOW
+    history_anchor_count: int = DEFAULT_HISTORY_ANCHOR_COUNT
+    recent_contiguous_count: int = DEFAULT_RECENT_CONTIGUOUS_COUNT
 
     @classmethod
     def create(
         cls,
         max_visual: int = DEFAULT_MAX_VISUAL_HISTORY,
         max_action: int = DEFAULT_MAX_ACTION_HISTORY,
+        *,
+        visual_context_window: int = DEFAULT_VISUAL_CONTEXT_WINDOW,
+        history_anchor_count: Optional[int] = None,
+        recent_contiguous_count: Optional[int] = None,
     ) -> "FixedHistoryBuffer":
         if max_visual < 1:
             raise ValueError("max_visual must be at least 1")
         if max_action < 1:
             raise ValueError("max_action must be at least 1")
-        return cls(max_visual=max_visual, max_action=max_action)
+        # Explicitly requested legacy budgets retain the old contiguous-tail
+        # behavior for narrow smoke tests.  The Stage 1 default is always 6+3.
+        if history_anchor_count is None and recent_contiguous_count is None and max_visual != DEFAULT_MAX_VISUAL_HISTORY:
+            history_anchor_count, recent_contiguous_count = 0, max_visual
+        history_anchor_count = (
+            DEFAULT_HISTORY_ANCHOR_COUNT if history_anchor_count is None else history_anchor_count
+        )
+        recent_contiguous_count = (
+            DEFAULT_RECENT_CONTIGUOUS_COUNT
+            if recent_contiguous_count is None
+            else recent_contiguous_count
+        )
+        if history_anchor_count < 0 or recent_contiguous_count < 1:
+            raise ValueError("invalid visual history composition")
+        if max_visual != history_anchor_count + recent_contiguous_count:
+            raise ValueError("max_visual must equal history anchors plus recent frames")
+        if visual_context_window < max_visual:
+            raise ValueError("visual_context_window must fit the model-visible history")
+        return cls(
+            max_visual=max_visual,
+            max_action=max_action,
+            visual_context_window=visual_context_window,
+            history_anchor_count=history_anchor_count,
+            recent_contiguous_count=recent_contiguous_count,
+        )
+
+    @property
+    def visual_history(self) -> Tuple[NavigationObservation, ...]:
+        return select_temporal_history(
+            self.visual_context,
+            context_window=self.visual_context_window,
+            history_anchor_count=self.history_anchor_count,
+            recent_contiguous_count=self.recent_contiguous_count,
+        )
 
     def reset(self, observation: NavigationObservation) -> "FixedHistoryBuffer":
         _assert_oracle_free_observation(observation)
         return FixedHistoryBuffer(
-            visual_history=(observation,),
+            visual_context=(observation,),
             action_history=tuple(),
             max_visual=self.max_visual,
             max_action=self.max_action,
+            visual_context_window=self.visual_context_window,
+            history_anchor_count=self.history_anchor_count,
+            recent_contiguous_count=self.recent_contiguous_count,
         )
 
     def append(
@@ -55,10 +105,13 @@ class FixedHistoryBuffer:
     ) -> "FixedHistoryBuffer":
         _assert_oracle_free_observation(observation)
         return FixedHistoryBuffer(
-            visual_history=(self.visual_history + (observation,))[-self.max_visual :],
+            visual_context=(self.visual_context + (observation,))[-self.visual_context_window :],
             action_history=(self.action_history + (action,))[-self.max_action :],
             max_visual=self.max_visual,
             max_action=self.max_action,
+            visual_context_window=self.visual_context_window,
+            history_anchor_count=self.history_anchor_count,
+            recent_contiguous_count=self.recent_contiguous_count,
         )
 
 

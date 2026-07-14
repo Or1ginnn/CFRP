@@ -32,6 +32,10 @@ from vlnce_server.habitat030.stage1_runner import (
     FixedHistoryBuffer,
     Stage1EpisodeRunner,
 )
+from vlnce_server.habitat030.temporal_history import (
+    DEFAULT_VISUAL_CONTEXT_WINDOW,
+    select_temporal_history,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,7 +146,7 @@ def run_episode(
             history=FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history),
         )
         runner.reset()
-        frame_paths = [_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0)]
+        frame_context_paths = [_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0)]
         steps = []
         minimum_distance = _distance(wrapper.metrics())
         end_reason = "max_steps"
@@ -158,7 +162,7 @@ def run_episode(
                 turn_index=turn_index,
                 instruction=latest.instruction,
                 current_plan=current_plan,
-                visual_history_paths=tuple(frame_paths),
+                visual_history_paths=select_temporal_history(frame_context_paths),
                 action_history=runner.history.action_history,
                 allowed_actions=latest.allowed_actions,
             )
@@ -205,16 +209,16 @@ def run_episode(
                     "history": {
                         "visual_count": step.history_visual_count,
                         "action_count": step.history_action_count,
-                        "rgb_paths": list(frame_paths),
+                        "rgb_paths": list(select_temporal_history(frame_context_paths)),
                     },
                     "metrics": _metrics_to_dict(step.metrics),
                     "oracle_only": _oracle_to_dict(oracle_state),
                 }
             )
-            frame_paths = _append_capped(
-                frame_paths,
+            frame_context_paths = _append_capped(
+                frame_context_paths,
                 _save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, turn_index + 1),
-                args.max_visual_history,
+                DEFAULT_VISUAL_CONTEXT_WINDOW,
             )
             if step.episode_over or step.action == "STOP":
                 end_reason = "stop"

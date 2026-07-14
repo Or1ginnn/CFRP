@@ -45,6 +45,23 @@ def test_stage1_messages_include_only_model_visible_context_in_order():
         assert forbidden not in rendered
 
 
+def test_stage1_messages_label_the_nine_frame_temporal_contract():
+    nine_frame_request = Stage1ModelRequest(
+        instruction="Navigate.",
+        current_plan=plan(),
+        visual_history=tuple("rgb-{}".format(index) for index in range(9)),
+        action_history=tuple(),
+        allowed_actions=("MOVE_FORWARD", "STOP"),
+    )
+
+    content = build_stage1_messages(nine_frame_request)[1]["content"]
+    labels = [item["text"] for item in content if item["type"] == "text"][1:]
+    assert "Route-history anchor 1 of 6" in labels[0]
+    assert "Route-history anchor 6 of 6" in labels[5]
+    assert "Recent consecutive observation 1 of 3" in labels[6]
+    assert "Recent consecutive observation 3 of 3" in labels[8]
+
+
 def test_vllm_messages_preserve_text_and_image_order(monkeypatch):
     monkeypatch.setattr("vlnce_server.qwen3vl.vllm_client._png_data_uri", lambda image: "data:" + image)
 

@@ -29,6 +29,12 @@ from vlnce_server.habitat030.stage1_runner import (
     DEFAULT_MAX_VISUAL_HISTORY,
     FixedHistoryBuffer,
 )
+from vlnce_server.habitat030.temporal_history import (
+    DEFAULT_MODEL_VISUAL_FRAME_COUNT,
+    DEFAULT_VISUAL_CONTEXT_WINDOW,
+    select_temporal_history,
+    temporal_history_spec,
+)
 from vlnce_server.qwen3vl.vision import (
     HABITAT_RGB_HEIGHT,
     HABITAT_RGB_WIDTH,
@@ -55,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max-steps", type=int, default=160)
     parser.add_argument("--max-visual-history", type=int, default=DEFAULT_MAX_VISUAL_HISTORY)
+    parser.add_argument("--visual-context-window", type=int, default=DEFAULT_VISUAL_CONTEXT_WINDOW)
     parser.add_argument("--max-action-history", type=int, default=DEFAULT_MAX_ACTION_HISTORY)
     parser.add_argument("--success-distance", type=float, default=3.0)
     parser.add_argument(
@@ -142,6 +149,8 @@ def _write_collection_status(
             "processor_kwargs": qwen3vl_processor_kwargs(),
         },
     }
+    if args.max_visual_history == DEFAULT_MODEL_VISUAL_FRAME_COUNT:
+        payload["temporal_visual_history"] = temporal_history_spec()
     if error is not None:
         payload["error"] = error
         destination = output_dir / "collection_status.json"
@@ -193,7 +202,11 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
     frames_dir = episode_dir / "frames"
     try:
         observation = wrapper.reset()
-        history = FixedHistoryBuffer.create(args.max_visual_history, args.max_action_history).reset(observation)
+        history = FixedHistoryBuffer.create(
+            args.max_visual_history,
+            args.max_action_history,
+            visual_context_window=args.visual_context_window,
+        ).reset(observation)
         frame_paths = [_save_frame(observation.rgb, frames_dir, 0)]
         task_success_distance = _task_success_distance(env, args.success_distance)
         follower_goal_radius = (
@@ -215,7 +228,12 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
                 {
                     "turn_index": turn_index,
                     "instruction": observation.instruction,
-                    "visual_history_paths": tuple(frame_paths),
+                    "visual_history_paths": select_temporal_history(
+                        frame_paths,
+                        context_window=args.visual_context_window,
+                        history_anchor_count=history.history_anchor_count,
+                        recent_contiguous_count=history.recent_contiguous_count,
+                    ),
                     "action_history": history.action_history,
                     "allowed_actions": observation.allowed_actions,
                     "action": action,
@@ -235,7 +253,7 @@ def collect_episode(args: argparse.Namespace, episode_id: str, output_dir: Path)
             frame_paths = _append_capped(
                 frame_paths,
                 _save_frame(observation.rgb, frames_dir, turn_index + 1),
-                args.max_visual_history,
+                args.visual_context_window,
             )
             if step.episode_over or action == "STOP":
                 success = bool(step.metrics.success and step.metrics.success >= 1.0)

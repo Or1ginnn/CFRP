@@ -183,8 +183,20 @@ def test_history_windows_are_capped():
 def test_default_history_window_matches_stage1_plan():
     history = FixedHistoryBuffer.create()
 
-    assert history.max_visual == 6
+    assert history.max_visual == 9
     assert history.max_action == 8
+
+
+def test_default_history_uses_six_anchors_and_three_recent_frames():
+    history = FixedHistoryBuffer.create().reset(FakeWrapper()._observation("0"))
+    for index in range(1, 51):
+        history = history.append(FakeWrapper()._observation(str(index)), "MOVE_FORWARD")
+
+    assert tuple(observation.rgb for observation in history.visual_history) == (
+        "rgb-19", "rgb-24", "rgb-30", "rgb-35", "rgb-41", "rgb-47",
+        "rgb-48", "rgb-49", "rgb-50",
+    )
+    assert len(history.visual_context) == 32
 
 
 def test_history_contains_no_privileged_fields():

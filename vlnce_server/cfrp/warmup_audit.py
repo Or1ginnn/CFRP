@@ -54,8 +54,9 @@ def audit_stage1_warmup(
         current_point = request.current_plan.current_points()[0]
         if output.subgoal != current_point.text:
             raise ValueError(f"line {line_number}: target subgoal does not match current plan point")
-        if oracle_only.get("oracle_action") != output.action:
-            raise ValueError(f"line {line_number}: target action does not match oracle action")
+        oracle_actions = tuple(oracle_only.get("oracle_actions", (oracle_only.get("oracle_action"),)))
+        if oracle_actions != (output.actions or (output.action,)):
+            raise ValueError(f"line {line_number}: target actions do not match oracle actions")
         if len(request.visual_history_paths) > max_visual_history:
             raise ValueError(f"line {line_number}: visual history exceeds manifest budget")
         if len(request.action_history) > max_action_history:
@@ -64,7 +65,7 @@ def audit_stage1_warmup(
             _validate_frames(request.visual_history_paths, line_number, expected_frame_size)
         _validate_temporal_history_paths(request, temporal_spec, line_number)
         by_episode[request.episode_id].append((request, output, oracle_only))
-        action_counts[output.action] += 1
+        action_counts.update(output.actions or (output.action,))
         progress_counts[str(output.progress)] += 1
 
     if tuple(by_episode) != requested:
@@ -103,8 +104,8 @@ def _audit_episode(
     actions: list[str] = []
     previous_plan = None
     for expected_turn, (request, output, _oracle_only) in enumerate(trajectory):
-        if request.turn_index != expected_turn or request.request_id != expected_turn:
-            raise ValueError(f"episode {episode_id}: turns must be contiguous from zero")
+        if request.request_id != expected_turn:
+            raise ValueError(f"episode {episode_id}: request IDs must be contiguous from zero")
         expected_history = tuple(actions[-max_action_history:]) if max_action_history else tuple()
         if request.action_history != expected_history:
             raise ValueError(f"episode {episode_id} turn {expected_turn}: action history is inconsistent")
@@ -114,7 +115,7 @@ def _audit_episode(
                 raise ValueError(f"episode {episode_id} turn {expected_turn}: plan cursor is inconsistent")
         previous_plan = request.current_plan
         previous_progress = output.progress
-        actions.append(output.action)
+        actions.extend(output.actions or (output.action,))
     if actions.count("STOP") != 1 or actions[-1] != "STOP":
         raise ValueError(f"episode {episode_id}: trajectory must end with exactly one STOP")
 

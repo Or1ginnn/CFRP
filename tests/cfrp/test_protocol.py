@@ -213,6 +213,34 @@ def test_invalid_action_is_rejected():
         validate_output(output, ALLOWED_ACTIONS)
 
 
+def test_stage1_accepts_a_bounded_action_chunk_but_stage2_remains_atomic():
+    plan = parse_cfrp_output(INIT_XML).plan
+    assert plan is not None
+    output = parse_cfrp_output(
+        "<progress>hold</progress><subgoal>cross the room</subgoal>"
+        "<actions><action>MOVE_FORWARD</action><action>MOVE_FORWARD</action>"
+        "<action>TURN_LEFT</action></actions>"
+    )
+
+    validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
+    assert output.actions == ("MOVE_FORWARD", "MOVE_FORWARD", "TURN_LEFT")
+    assert output.action == "MOVE_FORWARD"
+    with pytest.raises(CFRPProtocolError, match="exactly one action"):
+        validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage2")
+
+
+def test_stage1_rejects_stop_mixed_with_other_chunk_actions():
+    plan = parse_cfrp_output(INIT_XML).plan
+    assert plan is not None
+    output = parse_cfrp_output(
+        "<progress>hold</progress><subgoal>stop</subgoal>"
+        "<actions><action>MOVE_FORWARD</action><action>STOP</action></actions>"
+    )
+
+    with pytest.raises(CFRPProtocolError, match="STOP must be the only"):
+        validate_output(output, ALLOWED_ACTIONS, previous_plan=plan, mode="stage1")
+
+
 def test_replan_requires_plan():
     output = parse_cfrp_output(
         """

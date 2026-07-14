@@ -73,8 +73,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def target_xml(progress: str, subgoal: str, action: str) -> str:
-    return f"<progress>{progress}</progress><subgoal>{subgoal}</subgoal><action>{action}</action>"
+def target_xml(progress: str, subgoal: str, actions: Sequence[str]) -> str:
+    if len(actions) == 1:
+        action_xml = f"<action>{actions[0]}</action>"
+    else:
+        action_xml = "<actions>" + "".join(f"<action>{action}</action>" for action in actions) + "</actions>"
+    return f"<progress>{progress}</progress><subgoal>{subgoal}</subgoal>{action_xml}"
 
 
 def main() -> int:
@@ -284,13 +288,23 @@ def _label_trajectory(record: Any, raw_steps: Sequence[dict[str, Any]]) -> list[
     non_stop_actions = sum(1 for step in raw_steps if step["action"] != "STOP")
     advance_indices = set(advance_turn_indices(non_stop_actions, plan))
     records = []
-    for raw_step in raw_steps:
+    cursor = 0
+    decision_index = 0
+    while cursor < len(raw_steps):
+        raw_step = raw_steps[cursor]
         turn_index = raw_step["turn_index"]
         progress = "advance" if turn_index in advance_indices else "hold"
+        chunk = [raw_step]
+        if progress == "hold" and raw_step["action"] != "STOP":
+            while len(chunk) < 4 and cursor + len(chunk) < len(raw_steps):
+                candidate = raw_steps[cursor + len(chunk)]
+                if candidate["turn_index"] in advance_indices or candidate["action"] == "STOP":
+                    break
+                chunk.append(candidate)
         current_point = plan.current_points()[0]
         request = Stage1RolloutRequest(
             episode_id=record.episode_id,
-            request_id=turn_index,
+            request_id=decision_index,
             turn_index=turn_index,
             instruction=raw_step["instruction"],
             current_plan=plan,
@@ -301,12 +315,17 @@ def _label_trajectory(record: Any, raw_steps: Sequence[dict[str, Any]]) -> list[
         records.append(
             {
                 "model_input": request.to_dict(),
-                "target_xml": target_xml(progress, current_point.text, raw_step["action"]),
-                "oracle_only": raw_step["oracle_only"],
+                "target_xml": target_xml(progress, current_point.text, tuple(item["action"] for item in chunk)),
+                "oracle_only": {
+                    **raw_step["oracle_only"],
+                    "oracle_actions": [item["action"] for item in chunk],
+                },
             }
         )
         if progress == "advance":
             plan = plan.advance_current()
+        cursor += len(chunk)
+        decision_index += 1
     return records
 
 

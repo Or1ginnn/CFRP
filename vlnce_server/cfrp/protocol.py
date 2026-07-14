@@ -16,6 +16,7 @@ VALID_TOOLS = {"continue", "replan"}
 VALID_PROGRESS = {"hold", "advance"}
 VALID_PROTOCOL_MODES = {"stage1", "stage2"}
 VALID_PLAN_STATUSES = {"done", "current", "todo", "abandoned"}
+MAX_STAGE1_ACTION_CHUNK = 4
 
 
 class CFRPProtocolError(ValueError):
@@ -107,6 +108,7 @@ class PlanUpdate:
 class CFRPOutput:
     subgoal: str
     action: str
+    actions: tuple[str, ...] = tuple()
     tool: str | None = None
     progress: str | None = None
     plan: PlanState | None = None
@@ -144,13 +146,14 @@ def parse_cfrp_output(text: str) -> CFRPOutput:
     tool = _optional_text(root, "tool")
     progress = _optional_text(root, "progress")
     subgoal = _required_text(root, "subgoal")
-    action = _required_text(root, "action")
+    actions = _parse_actions(root)
 
     return CFRPOutput(
         tool=tool,
         progress=progress,
         subgoal=subgoal,
-        action=action,
+        action=actions[0],
+        actions=actions,
         plan=plan,
         plan_update=plan_update,
         raw_xml=raw_text,
@@ -184,8 +187,18 @@ def validate_output(
     if output.tool not in VALID_TOOLS:
         if mode == "stage2":
             raise CFRPProtocolError(f"invalid tool: {output.tool}")
-    if output.action not in allowed_action_set:
-        raise CFRPProtocolError(f"invalid action: {output.action}")
+    actions = output.actions or (output.action,)
+    if mode != "stage1" and len(actions) != 1:
+        raise CFRPProtocolError("Stage 2 output must contain exactly one action")
+    if mode == "stage1" and len(actions) > MAX_STAGE1_ACTION_CHUNK:
+        raise CFRPProtocolError(
+            f"Stage 1 action chunk exceeds {MAX_STAGE1_ACTION_CHUNK} primitive actions"
+        )
+    if "STOP" in actions and actions != ("STOP",):
+        raise CFRPProtocolError("STOP must be the only action in a chunk")
+    for action in actions:
+        if action not in allowed_action_set:
+            raise CFRPProtocolError(f"invalid action: {action}")
     if not output.subgoal:
         raise CFRPProtocolError("missing subgoal")
 
@@ -226,6 +239,27 @@ def _validate_stage1_output(output: CFRPOutput, previous_plan: PlanState | None)
 def _validate_stage2_output(output: CFRPOutput, previous_plan: PlanState | None) -> None:
     if output.progress is not None:
         raise CFRPProtocolError("Stage 2 output must not contain <progress>")
+
+
+def _parse_actions(root: ET.Element) -> tuple[str, ...]:
+    """Accept a legacy primitive or a bounded Stage 1 action chunk."""
+
+    primitive_nodes = root.findall("action")
+    chunk_nodes = root.findall("actions")
+    if primitive_nodes and chunk_nodes:
+        raise CFRPProtocolError("output cannot contain both <action> and <actions>")
+    if len(primitive_nodes) > 1:
+        raise CFRPProtocolError("output contains multiple top-level <action> fields")
+    if primitive_nodes:
+        return (_node_text(primitive_nodes[0]),)
+    if len(chunk_nodes) != 1:
+        raise CFRPProtocolError("output requires exactly one <action> or <actions> field")
+    actions = tuple(_node_text(node) for node in chunk_nodes[0].findall("action"))
+    if not actions:
+        raise CFRPProtocolError("<actions> must contain at least one <action>")
+    if any(not action for action in actions):
+        raise CFRPProtocolError("<actions> must not contain an empty <action>")
+    return actions
 
 
 def validate_plan(plan: PlanState) -> None:

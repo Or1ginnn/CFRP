@@ -25,10 +25,12 @@ The <action> field must contain exactly one action selected from the current ste
 STAGE1_SYSTEM_PROMPT = """You are a continuous Vision-and-Language Navigation agent.
 
 The controller owns a persistent structured plan. Read it as execution context; do not rewrite it.
-Output only XML with exactly one <progress>, one <subgoal>, and one <action> field.
+Output only XML with exactly one <progress>, one <subgoal>, and either one <action>
+or one <actions> field containing up to four ordered primitive <action> items.
 Set <progress> to hold or advance. advance moves the normal plan cursor to the next point.
 Do not output <tool>, <plan>, <plan_update>, or free-form reasoning.
-STOP is a primitive action. The <action> must be selected from the current Allowed actions.
+STOP is a primitive action and must be output alone. Every action must be selected
+from the current Allowed actions.
 """
 
 

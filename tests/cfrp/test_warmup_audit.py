@@ -52,6 +52,6 @@ def test_audit_rejects_target_not_matching_oracle_action():
     try:
         audit_stage1_warmup([record], _manifest())
     except ValueError as exc:
-        assert "does not match oracle action" in str(exc)
+        assert "do not match oracle actions" in str(exc)
     else:
         raise AssertionError("expected semantic audit to fail")

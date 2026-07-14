@@ -251,7 +251,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         end_reason = "max_steps"
         for turn_index in range(job.max_steps):
             try:
-                step = runner.step(client.generate_xml(runner.model_request()), turn_index=turn_index)
+                step = runner.step_with_policy(client, turn_index=turn_index)
             except CFRPProtocolError as exc:
                 end_reason = "invalid_xml_or_action"
                 steps.append({"turn_index": turn_index, "protocol_error": str(exc)})
@@ -269,6 +269,8 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 "progress": step.progress,
                 "subgoal": step.subgoal,
                 "action": step.action,
+                "chunk_index": step.chunk_index,
+                "chunk_size": step.chunk_size,
                 "habitat_action": step.habitat_action,
                 "plan_xml": step.plan_xml,
                 "history": {

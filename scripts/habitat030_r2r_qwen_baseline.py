@@ -154,38 +154,41 @@ def run_episode(
         end_reason = "max_steps"
 
         for turn_index in range(args.max_steps):
-            current_plan = runner.controller.current_plan
-            if current_plan is None:
-                raise RuntimeError("Stage 1 controller lost its current plan")
-            latest = runner.history.visual_history[-1]
-            request = Stage1RolloutRequest(
-                episode_id=episode_id,
-                request_id=request_id,
-                turn_index=turn_index,
-                instruction=latest.instruction,
-                current_plan=current_plan,
-                visual_history_paths=frame_history.visible,
-                action_history=runner.history.action_history,
-                allowed_actions=latest.allowed_actions,
-            )
-            write_request(request_path(exchange_dir, request_id), request)
-            response = wait_for_response(
-                response_path(exchange_dir, request_id),
-                timeout_seconds=args.response_timeout,
-            )
-            request_id += 1
-            if (
-                response.episode_id != episode_id
-                or response.request_id != request.request_id
-                or response.turn_index != turn_index
-            ):
-                raise RuntimeError("model response does not match the pending rollout request")
-            if response.error:
-                end_reason = "model_error"
-                steps.append({"turn_index": turn_index, "raw_xml": response.raw_xml, "model_error": response.error})
-                break
             try:
-                step = runner.step(response.raw_xml, turn_index=turn_index)
+                if runner.needs_model_decision:
+                    current_plan = runner.controller.current_plan
+                    if current_plan is None:
+                        raise RuntimeError("Stage 1 controller lost its current plan")
+                    latest = runner.history.visual_history[-1]
+                    request = Stage1RolloutRequest(
+                        episode_id=episode_id,
+                        request_id=request_id,
+                        turn_index=turn_index,
+                        instruction=latest.instruction,
+                        current_plan=current_plan,
+                        visual_history_paths=frame_history.visible,
+                        action_history=runner.history.action_history,
+                        allowed_actions=latest.allowed_actions,
+                    )
+                    write_request(request_path(exchange_dir, request_id), request)
+                    response = wait_for_response(
+                        response_path(exchange_dir, request_id),
+                        timeout_seconds=args.response_timeout,
+                    )
+                    request_id += 1
+                    if (
+                        response.episode_id != episode_id
+                        or response.request_id != request.request_id
+                        or response.turn_index != turn_index
+                    ):
+                        raise RuntimeError("model response does not match the pending rollout request")
+                    if response.error:
+                        end_reason = "model_error"
+                        steps.append({"turn_index": turn_index, "raw_xml": response.raw_xml, "model_error": response.error})
+                        break
+                    step = runner.step(response.raw_xml, turn_index=turn_index)
+                else:
+                    step = runner.step_pending(turn_index=turn_index)
             except CFRPProtocolError as exc:
                 end_reason = "invalid_xml_or_action"
                 steps.append(
@@ -206,6 +209,8 @@ def run_episode(
                     "progress": step.progress,
                     "subgoal": step.subgoal,
                     "action": step.action,
+                    "chunk_index": step.chunk_index,
+                    "chunk_size": step.chunk_size,
                     "habitat_action": step.habitat_action,
                     "plan_xml": step.plan_xml,
                     "history": {

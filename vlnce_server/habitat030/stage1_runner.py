@@ -138,6 +138,8 @@ class Stage1TrajectoryStep:
     history_visual_count: int
     history_action_count: int
     metrics: NavigationMetrics
+    chunk_index: int = 0
+    chunk_size: int = 1
 
 
 class Stage1EpisodeRunner:
@@ -159,39 +161,74 @@ class Stage1EpisodeRunner:
         self.history = history or FixedHistoryBuffer.create()
         self.trajectory: list[Stage1TrajectoryStep] = []
         self.initial_observation: Optional[NavigationObservation] = None
+        self._pending_actions: Tuple[str, ...] = tuple()
+        self._pending_output = None
+        self._pending_raw_xml = ""
 
     def reset(self) -> NavigationObservation:
         observation = self.env_wrapper.reset()
         self.initial_observation = observation
         self.history = self.history.reset(observation)
         self.trajectory = []
+        self._pending_actions = tuple()
+        self._pending_output = None
+        self._pending_raw_xml = ""
         return observation
 
+    @property
+    def needs_model_decision(self) -> bool:
+        return not self._pending_actions
+
     def step(self, raw_xml: str, turn_index: Optional[int] = None) -> Stage1TrajectoryStep:
+        """Start an action chunk, then execute its first primitive action."""
+
         if self.initial_observation is None:
             self.reset()
+        if not self.needs_model_decision:
+            raise RuntimeError("cannot start a new action chunk while actions remain pending")
 
         output = parse_cfrp_output(raw_xml)
         controller_result = self.controller.step(output)
-        env_step = self.env_wrapper.step(controller_result.action)
-        self.history = self.history.append(env_step.observation, controller_result.action)
+        self._pending_actions = controller_result.actions
+        self._pending_output = controller_result
+        self._pending_raw_xml = output.raw_xml
+        return self.step_pending(turn_index=turn_index)
+
+    def step_pending(self, turn_index: Optional[int] = None) -> Stage1TrajectoryStep:
+        """Execute the next already-decided primitive without querying the model."""
+
+        if not self._pending_actions or self._pending_output is None:
+            raise RuntimeError("Stage 1 runner has no pending action chunk")
+
+        controller_result = self._pending_output
+        action = self._pending_actions[0]
+        chunk_size = len(self._pending_actions)
+        chunk_index = len(controller_result.actions) - chunk_size + 1
+        env_step = self.env_wrapper.step(action)
+        self.history = self.history.append(env_step.observation, action)
         current_plan = controller_result.current_plan
         assert current_plan is not None
 
         trajectory_step = Stage1TrajectoryStep(
             turn_index=len(self.trajectory) if turn_index is None else turn_index,
-            raw_xml=output.raw_xml,
+            raw_xml=self._pending_raw_xml,
             progress=controller_result.progress or "",
             subgoal=controller_result.subgoal,
-            action=controller_result.action,
+            action=action,
             habitat_action=env_step.habitat_action,
             episode_over=env_step.episode_over,
             plan_xml=current_plan.to_xml(),
             history_visual_count=len(self.history.visual_history),
             history_action_count=len(self.history.action_history),
             metrics=env_step.metrics,
+            chunk_index=chunk_index,
+            chunk_size=len(controller_result.actions),
         )
         self.trajectory.append(trajectory_step)
+        self._pending_actions = self._pending_actions[1:]
+        if not self._pending_actions:
+            self._pending_output = None
+            self._pending_raw_xml = ""
         return trajectory_step
 
     def model_request(self):
@@ -225,7 +262,9 @@ class Stage1EpisodeRunner:
         generate_xml = getattr(policy, "generate_xml", None)
         if not callable(generate_xml):
             raise TypeError("Stage 1 policy must provide generate_xml(request)")
-        return self.step(generate_xml(self.model_request()), turn_index=turn_index)
+        if self.needs_model_decision:
+            return self.step(generate_xml(self.model_request()), turn_index=turn_index)
+        return self.step_pending(turn_index=turn_index)
 
     def run(self, raw_xml_outputs: Iterable[str]) -> Tuple[Stage1TrajectoryStep, ...]:
         self.reset()

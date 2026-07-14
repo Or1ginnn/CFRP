@@ -10,6 +10,7 @@ from .protocol import CFRPOutput, CFRPProtocolError, PlanState, apply_plan_updat
 @dataclass(frozen=True)
 class ControllerStepResult:
     action: str
+    actions: tuple[str, ...]
     current_plan: PlanState | None
     tool: str | None
     progress: str | None
@@ -50,9 +51,11 @@ class CFRPController:
         else:
             raise CFRPProtocolError(f"invalid tool: {output.tool}")
 
-        self.action_history.append(output.action)
+        actions = output.actions or (output.action,)
+        self.action_history.extend(actions)
         return ControllerStepResult(
             action=output.action,
+            actions=actions,
             current_plan=self.current_plan,
             tool=output.tool,
             progress=output.progress,

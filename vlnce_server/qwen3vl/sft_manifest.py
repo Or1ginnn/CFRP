@@ -52,8 +52,11 @@ def validate_stage1_sft_example(example: Mapping[str, Any], *, check_images: boo
     if not isinstance(target_xml, str) or messages[-1].get("content") != target_xml:
         raise ValueError("assistant content must equal target_xml")
     parsed = parse_cfrp_output(target_xml)
-    if parsed.action not in _ALLOWED_ACTIONS:
-        raise ValueError(f"unsupported Stage 1 action: {parsed.action}")
+    actions = parsed.actions or (parsed.action,)
+    if len(actions) > 4 or any(action not in _ALLOWED_ACTIONS for action in actions):
+        raise ValueError(f"unsupported Stage 1 action chunk: {actions}")
+    if "STOP" in actions and actions != ("STOP",):
+        raise ValueError("STOP must be the only Stage 1 chunk action")
     user_content = messages[1].get("content")
     if not isinstance(user_content, list):
         raise ValueError("user content must be multimodal content blocks")

@@ -27,7 +27,11 @@ def main() -> int:
     examples = load_stage1_sft_jsonl(args.input_jsonl)
     for example in examples:
         validate_stage1_sft_example(example, check_images=args.check_images)
-    actions = Counter(parse_cfrp_output(item["target_xml"]).action for item in examples)
+    actions = Counter(
+        action
+        for item in examples
+        for action in parse_cfrp_output(item["target_xml"]).actions
+    )
     print(f"examples={len(examples)}")
     print(f"actions={dict(sorted(actions.items()))}")
     print(f"images_checked={args.check_images}")

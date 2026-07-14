@@ -134,6 +134,24 @@ def test_policy_runner_reuses_history_prompt_protocol_and_action_path():
     assert policy.requests[1].current_plan.current_points()[0].id == "p2"
 
 
+def test_policy_runner_executes_a_chunk_before_requesting_the_next_model_output():
+    runner = Stage1EpisodeRunner(FakeWrapper(), plan())
+    policy = FakeStage1Policy(
+        (
+            "<progress>hold</progress><subgoal>scripted subgoal</subgoal>"
+            "<actions><action>MOVE_FORWARD</action><action>TURN_LEFT</action></actions>",
+            stage1_xml("hold", "STOP"),
+        )
+    )
+
+    trajectory = runner.run_with_policy(policy, max_steps=4)
+
+    assert [step.action for step in trajectory] == ["MOVE_FORWARD", "TURN_LEFT", "STOP"]
+    assert [step.chunk_index for step in trajectory] == [1, 2, 1]
+    assert [step.chunk_size for step in trajectory] == [2, 2, 1]
+    assert len(policy.requests) == 2
+
+
 def test_model_request_uses_observation_actions_when_wrapper_does_not_expose_them():
     wrapper = FakeWrapper()
     runner = Stage1EpisodeRunner(wrapper, plan())

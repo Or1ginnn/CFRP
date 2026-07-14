@@ -36,6 +36,12 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Parallel workers used to resize unique source frames before conversation export.",
     )
+    parser.add_argument(
+        "--image-storage",
+        choices=("png", "source"),
+        default="png",
+        help="Materialize portable PNGs or reference the existing episode NPY frames.",
+    )
     return parser.parse_args()
 
 
@@ -47,11 +53,14 @@ def main() -> int:
     images_dir = output_dir / "images"
     if args.image_workers < 1:
         raise ValueError("image-workers must be at least one")
-    unique_images = _export_unique_images_parallel(
-        input_path,
-        images_dir,
-        workers=args.image_workers,
-    )
+    if args.image_storage == "png":
+        unique_images = _export_unique_images_parallel(
+            input_path,
+            images_dir,
+            workers=args.image_workers,
+        )
+    else:
+        unique_images = None
     output_path = output_dir / "stage1_sft.jsonl"
     windows = 0
     turns = 0
@@ -80,7 +89,12 @@ def main() -> int:
                 episode_records = []
                 episode_images = []
             episode_id = record_episode_id
-            image_uris = _export_images(record, images_dir, image_cache)
+            image_uris = _export_images(
+                record,
+                images_dir,
+                image_cache,
+                materialize_png=args.image_storage == "png",
+            )
             episode_records.append(record)
             episode_images.append(image_uris)
         if episode_records:
@@ -102,8 +116,9 @@ def main() -> int:
                 "conversation_windows": windows,
                 "supervised_turns": turns,
                 "max_conversation_turns": args.max_conversation_turns,
-                "unique_images": unique_images,
+                "unique_images": len(image_cache),
                 "image_workers": args.image_workers,
+                "image_storage": args.image_storage,
                 "habitat_rgb_size": [640, 480],
                 "model_image_size": list(qwen3vl_image_size()),
                 "processor_kwargs": qwen3vl_processor_kwargs(),
@@ -116,13 +131,21 @@ def main() -> int:
     print(f"episodes={episodes}")
     print(f"conversation_windows={windows}")
     print(f"supervised_turns={turns}")
-    print(f"unique_images={unique_images}")
+    if unique_images is not None and unique_images != len(image_cache):
+        raise RuntimeError("preconverted image count does not match exported image references")
+    print(f"unique_images={len(image_cache)}")
     print(f"sft_jsonl={output_path}")
     print("convert_stage1_warmup_to_sft: OK")
     return 0
 
 
-def _export_images(record: dict, images_dir: Path, image_cache: dict[str, str]) -> list[str]:
+def _export_images(
+    record: dict,
+    images_dir: Path,
+    image_cache: dict[str, str],
+    *,
+    materialize_png: bool = True,
+) -> list[str]:
     request = record["model_input"]
     image_paths = request["visual_history_paths"]
     image_uris = []
@@ -130,10 +153,15 @@ def _export_images(record: dict, images_dir: Path, image_cache: dict[str, str]) 
         source = str(Path(image_path).resolve())
         image_uri = image_cache.get(source)
         if image_uri is None:
-            destination = _image_destination(source, images_dir)
-            if not destination.is_file():
-                _convert_image((source, str(destination)))
-            image_uri = destination.resolve().as_uri()
+            if materialize_png:
+                destination = _image_destination(source, images_dir)
+                if not destination.is_file():
+                    _convert_image((source, str(destination)))
+                image_uri = destination.resolve().as_uri()
+            else:
+                if not Path(source).is_file():
+                    raise ValueError(f"source RGB frame is missing: {source}")
+                image_uri = Path(source).as_uri()
             image_cache[source] = image_uri
         image_uris.append(image_uri)
     return image_uris

@@ -87,6 +87,19 @@ def test_training_messages_normalize_file_uri_without_mutating_manifest():
     assert messages[1]["content"][0]["image"] == "file:///tmp/frame.png"
 
 
+def test_training_messages_load_npy_frames_for_processor(tmp_path: Path):
+    np = pytest.importorskip("numpy")
+    source = tmp_path / "frame.npy"
+    np.save(source, np.zeros((480, 640, 3), dtype=np.uint8))
+    messages = example()["messages"]
+    messages[1]["content"][0]["image"] = source.as_uri()
+
+    normalized = _messages_with_processor_image_paths(messages)
+
+    assert normalized[1]["content"][0]["image"].size == (384, 288)
+    assert messages[1]["content"][0]["image"] == source.as_uri()
+
+
 def test_llamafactory_export_preserves_target_and_image_order():
     source = example()
 
@@ -156,6 +169,22 @@ def test_unique_image_scan_preserves_first_seen_order(tmp_path: Path):
         str(first.resolve()),
         str(second.resolve()),
     ]
+
+
+def test_warmup_image_export_can_reference_source_frames(tmp_path: Path):
+    source = tmp_path / "frame.npy"
+    source.write_bytes(b"npy-placeholder")
+    record = {"model_input": {"visual_history_paths": [str(source), str(source)]}}
+
+    exported = _export_images(
+        record,
+        tmp_path / "images",
+        {},
+        materialize_png=False,
+    )
+
+    assert exported == [source.resolve().as_uri(), source.resolve().as_uri()]
+    assert not (tmp_path / "images").exists()
 
 
 def test_sft_dry_run_executes_main_and_writes_manifest(tmp_path: Path):

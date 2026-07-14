@@ -11,6 +11,10 @@ The default window contains at most four user/assistant navigation turns. Its
 first turn receives the full visible slow-fast context; later turns append the
 one to three newly arrived contiguous frames produced by the preceding action
 chunk. Frames are stored once per episode and referenced from windows.
+For the formal full-split run, the SFT manifest references the collected NPY
+frames directly; the weighted trainer loads each referenced frame and resizes it
+to 384x288 in memory before the Qwen3-VL processor. Portable PNG export remains
+available for small smoke manifests, but must not duplicate the full raw corpus.
 
 ## Objective
 

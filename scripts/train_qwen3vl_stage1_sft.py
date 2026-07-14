@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl, local_image_path
 from vlnce_server.qwen3vl.stage1 import DEFAULT_QWEN3_VL_MODEL
-from vlnce_server.qwen3vl.vision import qwen3vl_processor_kwargs
+from vlnce_server.qwen3vl.vision import prepare_qwen3vl_image, qwen3vl_processor_kwargs
 from vlnce_server.qwen3vl.loss_weights import (
     DEFAULT_ACTION_LOSS_WEIGHT,
     DEFAULT_PROGRESS_LOSS_WEIGHT,
@@ -572,10 +572,23 @@ def _messages_with_processor_image_paths(messages: list[dict[str, Any]]) -> list
         for block in content:
             copied = dict(block)
             if copied.get("type") == "image":
-                copied["image"] = str(local_image_path(copied["image"]))
+                copied["image"] = _processor_image(copied["image"])
             blocks.append(copied)
         normalized.append({**message, "content": blocks})
     return normalized
+
+
+def _processor_image(source: str) -> Any:
+    """Load collected NPY frames once per window; keep portable images as paths."""
+
+    path = local_image_path(source)
+    if path.suffix.lower() != ".npy":
+        return str(path)
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("NumPy is required to load referenced Stage 1 RGB frames") from exc
+    return prepare_qwen3vl_image(np.load(path))
 
 
 def _write_run_manifest(

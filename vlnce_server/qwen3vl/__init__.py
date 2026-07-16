@@ -2,10 +2,12 @@
 
 from .stage1 import (
     DEFAULT_QWEN3_VL_MODEL,
+    DEFAULT_STAGE1_STREAMING_TURNS,
     Qwen3VLDependencyError,
     Qwen3VLStage1Policy,
     Stage1ModelRequest,
     build_stage1_messages,
+    build_stage1_turn_content,
 )
 from .worker import run_file_worker
 from .vllm_client import VLLMRequestError, VLLMStage1Client, make_openai_messages
@@ -24,10 +26,12 @@ from .vision import (
 
 __all__ = [
     "DEFAULT_QWEN3_VL_MODEL",
+    "DEFAULT_STAGE1_STREAMING_TURNS",
     "Qwen3VLDependencyError",
     "Qwen3VLStage1Policy",
     "Stage1ModelRequest",
     "build_stage1_messages",
+    "build_stage1_turn_content",
     "run_file_worker",
     "VLLMRequestError",
     "VLLMStage1Client",

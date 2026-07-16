@@ -238,16 +238,16 @@ def test_default_history_window_matches_stage1_plan():
     assert history.max_action == 8
 
 
-def test_default_history_uses_slow_memory_and_three_recent_frames():
+def test_default_history_uses_eight_slow_memory_frames_and_current_observation():
     history = FixedHistoryBuffer.create().reset(FakeWrapper()._observation("0"))
     for index in range(1, 51):
         history = history.append(FakeWrapper()._observation(str(index)), "MOVE_FORWARD")
 
     assert tuple(observation.rgb for observation in history.visual_history) == (
-        "rgb-17", "rgb-22", "rgb-28", "rgb-33", "rgb-39", "rgb-45",
-        "rgb-48", "rgb-49", "rgb-50",
+        "rgb-0", "rgb-7", "rgb-14", "rgb-21", "rgb-28", "rgb-35",
+        "rgb-42", "rgb-49", "rgb-50",
     )
-    assert len(history.visual_context) == 32
+    assert len(history.visual_context) == 51
 
 
 def test_history_contains_no_privileged_fields():

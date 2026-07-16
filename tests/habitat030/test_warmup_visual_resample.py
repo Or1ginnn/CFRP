@@ -4,7 +4,7 @@ from pathlib import Path
 from scripts.resample_stage1_warmup_visual_history import resample_warmup_directory
 
 
-def test_resample_rebuilds_slow_memory_plus_three_recent_visual_history(tmp_path: Path):
+def test_resample_rebuilds_eight_route_anchors_plus_current_frame(tmp_path: Path):
     source = tmp_path / "source"
     frames = source / "episode-1" / "frames"
     frames.mkdir(parents=True)
@@ -33,8 +33,10 @@ def test_resample_rebuilds_slow_memory_plus_three_recent_visual_history(tmp_path
 
     migrated = json.loads((destination / "stage1_warmup.jsonl").read_text(encoding="utf-8"))
     assert [Path(path).name for path in migrated["model_input"]["visual_history_paths"]] == [
-        "frame-0017.npy", "frame-0022.npy", "frame-0028.npy", "frame-0033.npy", "frame-0039.npy",
-        "frame-0045.npy", "frame-0048.npy", "frame-0049.npy", "frame-0050.npy",
+        "frame-0000.npy", "frame-0007.npy", "frame-0014.npy", "frame-0021.npy",
+        "frame-0028.npy", "frame-0035.npy", "frame-0042.npy", "frame-0049.npy",
+        "frame-0050.npy",
     ]
     assert result["max_visual_history"] == 9
-    assert result["temporal_visual_history"]["history_anchor_count"] == 6
+    assert result["temporal_visual_history"]["history_anchor_count"] == 8
+    assert result["temporal_visual_history"]["recent_contiguous_count"] == 1

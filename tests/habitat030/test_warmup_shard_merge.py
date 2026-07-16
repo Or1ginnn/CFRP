@@ -25,11 +25,11 @@ def _make_shard(
         "seed": 123,
         "max_steps": max_steps,
         "step_unit": "habitat_primitive_action",
-        "max_visual_history": 6,
+        "max_visual_history": 9,
         "max_action_history": 8,
         "visual_contract": contract,
         "temporal_visual_history": temporal_history
-        or {"history_anchor_count": 6, "recent_frame_count": 3},
+        or {"history_anchor_count": 8, "recent_frame_count": 1},
         "completed_episode_ids": episode_ids,
     }
     (shard / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -50,8 +50,8 @@ def test_merge_warmup_shards_writes_traceable_complete_manifest(tmp_path: Path):
     assert result["records"] == 3
     assert result["completed_episode_ids"] == ["1", "2", "3"]
     assert result["temporal_visual_history"] == {
-        "history_anchor_count": 6,
-        "recent_frame_count": 3,
+        "history_anchor_count": 8,
+        "recent_frame_count": 1,
     }
     assert len(result["source_shards"]) == 2
     assert result["step_unit"] == "habitat_primitive_action"
@@ -82,7 +82,7 @@ def test_merge_warmup_shards_rejects_temporal_history_mismatch(tmp_path: Path):
         tmp_path,
         "shard-001",
         ["2"],
-        temporal_history={"history_anchor_count": 4, "recent_frame_count": 3},
+        temporal_history={"history_anchor_count": 4, "recent_frame_count": 1},
     )
 
     with pytest.raises(ValueError, match="temporal_visual_history"):

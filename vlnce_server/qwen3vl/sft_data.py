@@ -7,10 +7,13 @@ from typing import Any
 
 from vlnce_server.cfrp import Stage1RolloutRequest, parse_cfrp_output, validate_output
 from vlnce_server.cfrp.prompts import STAGE1_SYSTEM_PROMPT
+from .stage1 import DEFAULT_STAGE1_STREAMING_TURNS, build_stage1_turn_content
 
 
-SFT_SCHEMA = "cfrp.qwen3vl.stage1_multiturn_sft.v1"
-DEFAULT_CONVERSATION_TURNS = 4
+SFT_SCHEMA = "cfrp.qwen3vl.stage1_streaming_sft.v2"
+DEFAULT_CONVERSATION_TURNS = DEFAULT_STAGE1_STREAMING_TURNS
+DEFAULT_STREAM_HISTORY_ANCHORS = 8
+DEFAULT_STREAM_OBSERVATIONS_PER_TURN = 1
 
 
 def make_stage1_sft_conversations(
@@ -21,10 +24,10 @@ def make_stage1_sft_conversations(
 ) -> list[dict[str, Any]]:
     """Convert one complete expert episode into bounded multi-turn windows.
 
-    The first episode turn teaches plan initialization. Later turns expose the
-    controller-owned plan and append only visual observations that have not
-    already appeared in the current window. A new window is self-contained: it
-    starts with the full visible slow-fast context from its first record.
+    The first episode turn teaches plan initialization. A new window starts
+    with up to eight uniformly sampled historical anchors plus its current
+    observation. Later turns append exactly one new current observation. This
+    mirrors StreamVLN's bounded fast dialogue while retaining CFRP's XML state.
     """
 
     if not records or len(records) != len(image_uris):
@@ -52,14 +55,11 @@ def make_stage1_sft_conversations(
             row_images = tuple(str(uri) for uri in image_uris[record_index])
             if len(row_images) != len(request.visual_history_paths):
                 raise ValueError("image URI count must match visual history")
+            if previous_turn_index is not None and request.turn_index <= previous_turn_index:
+                raise ValueError("conversation turn indices must increase")
             turn_images = _window_turn_images(
                 row_images,
                 first_in_window=record_index == start,
-                new_frame_count=(
-                    None
-                    if previous_turn_index is None
-                    else request.turn_index - previous_turn_index
-                ),
             )
             previous_turn_index = request.turn_index
             flattened_images.extend(turn_images)
@@ -94,6 +94,14 @@ def make_stage1_sft_conversations(
                 "window_index": window_index,
                 "start_turn_index": targets[0]["turn_index"],
                 "end_turn_index": targets[-1]["turn_index"],
+                "visual_contract": {
+                    "history_anchor_count": DEFAULT_STREAM_HISTORY_ANCHORS,
+                    "new_observations_per_turn": DEFAULT_STREAM_OBSERVATIONS_PER_TURN,
+                    "max_active_dialogue_turns": DEFAULT_CONVERSATION_TURNS,
+                    "max_window_images": (
+                        DEFAULT_STREAM_HISTORY_ANCHORS + DEFAULT_CONVERSATION_TURNS
+                    ),
+                },
                 "messages": messages,
                 "images": flattened_images,
                 "targets": targets,
@@ -148,17 +156,15 @@ def _assistant_response(
 
 
 def _window_turn_images(
-    row_images: Sequence[str], *, first_in_window: bool, new_frame_count: int | None
+    row_images: Sequence[str], *, first_in_window: bool
 ) -> tuple[str, ...]:
     if not row_images:
         raise ValueError("every conversation turn requires at least one image")
     if first_in_window:
+        if len(row_images) > DEFAULT_STREAM_HISTORY_ANCHORS + 1:
+            raise ValueError("window context exceeds eight history anchors plus current observation")
         return tuple(row_images)
-    if new_frame_count is None or new_frame_count < 1:
-        raise ValueError("conversation turn indices must increase")
-    # Action chunks contain at most three primitives. The slow-fast contract
-    # guarantees that its visible tail contains those newly arrived frames.
-    return tuple(row_images[-min(new_frame_count, len(row_images)) :])
+    return (str(row_images[-1]),)
 
 
 def _turn_content(
@@ -168,33 +174,9 @@ def _turn_content(
     initialize_plan: bool,
     first_in_window: bool,
 ) -> list[dict[str, Any]]:
-    recent_actions = ", ".join(request.action_history) if request.action_history else "None"
-    if initialize_plan:
-        plan_text = "None. Initialize one compact <plan> from the instruction."
-    else:
-        assert request.current_plan is not None
-        plan_text = request.current_plan.to_xml()
-    context_kind = "window context" if first_in_window else "new streaming observations"
-    text = f"""Navigation instruction:
-{request.instruction}
-
-Current compact plan:
-{plan_text}
-
-Executed recent actions (oldest to newest):
-{recent_actions}
-
-Allowed actions:
-{", ".join(request.allowed_actions)}
-
-The images below are {context_kind}. Continue the same navigation episode and output only the required XML."""
-    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for index, image in enumerate(images, start=1):
-        content.append(
-            {
-                "type": "text",
-                "text": f"Observation {index} of {len(images)} (oldest to newest):",
-            }
-        )
-        content.append({"type": "image", "image": image})
-    return content
+    return build_stage1_turn_content(
+        request,
+        tuple(images),
+        initialize_plan=initialize_plan,
+        first_in_window=first_in_window,
+    )

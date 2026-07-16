@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from vlnce_server.cfrp import PlanPoint, PlanState
@@ -56,10 +57,9 @@ def test_stage1_messages_label_the_nine_frame_temporal_contract():
 
     content = build_stage1_messages(nine_frame_request)[1]["content"]
     labels = [item["text"] for item in content if item["type"] == "text"][1:]
-    assert "Slow-memory keyframe 1 of 6" in labels[0]
-    assert "Slow-memory keyframe 6 of 6" in labels[5]
-    assert "Recent consecutive observation 1 of 3" in labels[6]
-    assert "Recent consecutive observation 3 of 3" in labels[8]
+    assert "Slow-memory keyframe 1 of 8" in labels[0]
+    assert "Slow-memory keyframe 8 of 8" in labels[7]
+    assert "Current streaming observation 1 of 1" in labels[8]
 
 
 def test_vllm_messages_preserve_text_and_image_order(monkeypatch):
@@ -98,6 +98,67 @@ def test_vllm_client_keeps_a_fixed_request_seed(monkeypatch):
 
     assert b'"seed": 77' in captured["payload"]
     assert b'"max_pixels": 110592' in captured["payload"]
+
+
+def test_vllm_client_keeps_eight_turn_dialogue_then_starts_a_new_window(monkeypatch):
+    payloads = []
+
+    class FakeResponse:
+        def read(self):
+            return b'{"choices": [{"message": {"content": "<progress>hold</progress><subgoal>x</subgoal><action>MOVE_FORWARD</action>"}}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(http_request, timeout):
+        payloads.append(json.loads(http_request.data))
+        return FakeResponse()
+
+    monkeypatch.setattr("vlnce_server.qwen3vl.vllm_client.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "vlnce_server.qwen3vl.vllm_client._png_data_uri",
+        lambda image: "data:" + image,
+    )
+    client = VLLMStage1Client("http://127.0.0.1:8000", "cfrp-stage1")
+
+    for _ in range(9):
+        client.generate_xml(request())
+
+    assert [message["role"] for message in payloads[1]["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert sum(
+        item["type"] == "image_url"
+        for item in payloads[1]["messages"][-1]["content"]
+    ) == 1
+    assert [message["role"] for message in payloads[7]["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert [message["role"] for message in payloads[8]["messages"]] == [
+        "system",
+        "user",
+    ]
 
 
 class FakeInputs(dict):

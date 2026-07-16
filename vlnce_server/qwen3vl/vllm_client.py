@@ -13,7 +13,12 @@ from typing import Any, Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .stage1 import Stage1ModelRequest, build_stage1_messages
+from .stage1 import (
+    DEFAULT_STAGE1_STREAMING_TURNS,
+    Stage1ModelRequest,
+    build_stage1_messages,
+    build_stage1_turn_content,
+)
 from .vision import prepare_qwen3vl_image, qwen3vl_processor_kwargs
 
 
@@ -39,11 +44,17 @@ class VLLMStage1Client:
         self.max_new_tokens = max_new_tokens
         self.timeout_seconds = timeout_seconds
         self.seed = seed
+        self._messages: List[Dict[str, Any]] = []
+        self._turn_count = 0
 
     def generate_xml(self, stage1_request: Stage1ModelRequest) -> str:
+        if self._turn_count % DEFAULT_STAGE1_STREAMING_TURNS == 0:
+            self._messages = make_openai_messages(stage1_request)
+        else:
+            self._messages.append(make_openai_streaming_user_message(stage1_request))
         payload = {
             "model": self.model,
-            "messages": make_openai_messages(stage1_request),
+            "messages": self._messages,
             "temperature": 0.0,
             "top_p": 1.0,
             "max_tokens": self.max_new_tokens,
@@ -65,9 +76,18 @@ class VLLMStage1Client:
         except URLError as exc:
             raise VLLMRequestError("vLLM connection failed: {}".format(exc.reason)) from exc
         try:
-            return str(body["choices"][0]["message"]["content"]).strip()
+            output = str(body["choices"][0]["message"]["content"]).strip()
         except (KeyError, IndexError, TypeError) as exc:
             raise VLLMRequestError("vLLM response lacks choices[0].message.content: {}".format(body)) from exc
+        self._messages.append({"role": "assistant", "content": output})
+        self._turn_count += 1
+        return output
+
+    def reset(self) -> None:
+        """Clear one episode's bounded streaming dialogue state."""
+
+        self._messages = []
+        self._turn_count = 0
 
 
 def make_openai_messages(stage1_request: Stage1ModelRequest) -> List[Dict[str, Any]]:
@@ -75,8 +95,26 @@ def make_openai_messages(stage1_request: Stage1ModelRequest) -> List[Dict[str, A
 
     messages = build_stage1_messages(stage1_request)
     system = {"role": "system", "content": messages[0]["content"]}
+    return [system, {"role": "user", "content": _openai_content(messages[1]["content"])}]
+
+
+def make_openai_streaming_user_message(
+    stage1_request: Stage1ModelRequest,
+) -> Dict[str, Any]:
+    """Append only the latest RGB observation inside an active eight-turn window."""
+
+    content = build_stage1_turn_content(
+        stage1_request,
+        (stage1_request.visual_history[-1],),
+        initialize_plan=False,
+        first_in_window=False,
+    )
+    return {"role": "user", "content": _openai_content(content)}
+
+
+def _openai_content(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     content = []
-    for item in messages[1]["content"]:
+    for item in items:
         if item["type"] == "text":
             content.append({"type": "text", "text": item["text"]})
         elif item["type"] == "image":
@@ -88,7 +126,7 @@ def make_openai_messages(stage1_request: Stage1ModelRequest) -> List[Dict[str, A
             )
         else:
             raise ValueError("unsupported Stage 1 content type: {}".format(item["type"]))
-    return [system, {"role": "user", "content": content}]
+    return content
 
 
 def _png_data_uri(image: Any) -> str:

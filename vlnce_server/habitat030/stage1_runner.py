@@ -55,7 +55,7 @@ class FixedHistoryBuffer:
         if max_action < 1:
             raise ValueError("max_action must be at least 1")
         # Explicitly requested legacy budgets retain the old contiguous-tail
-        # behavior for narrow smoke tests.  The Stage 1 default is always 6+3.
+        # behavior for narrow smoke tests. The Stage 1 default is always 8+1.
         if history_anchor_count is None and recent_contiguous_count is None and max_visual != DEFAULT_MAX_VISUAL_HISTORY:
             history_anchor_count, recent_contiguous_count = 0, max_visual
         history_anchor_count = (

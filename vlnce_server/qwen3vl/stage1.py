@@ -22,6 +22,7 @@ from vlnce_server.habitat030.temporal_history import (
 
 
 DEFAULT_QWEN3_VL_MODEL = "Qwen/Qwen3-VL-4B-Instruct"
+DEFAULT_STAGE1_STREAMING_TURNS = 8
 
 
 class Qwen3VLDependencyError(RuntimeError):
@@ -56,25 +57,71 @@ def build_stage1_messages(request: Stage1ModelRequest) -> list[dict[str, Any]]:
     PIL images, both of which are accepted by ``qwen_vl_utils`` at runtime.
     """
 
-    content: list[dict[str, Any]] = [
+    return [
+        {"role": "system", "content": STAGE1_SYSTEM_PROMPT},
         {
-            "type": "text",
-            "text": _stage1_context_text(request),
-        }
+            "role": "user",
+            "content": build_stage1_turn_content(
+                request,
+                request.visual_history,
+                initialize_plan=request.current_plan is None,
+                first_in_window=True,
+            ),
+        },
     ]
-    for index, rgb in enumerate(request.visual_history, start=1):
+
+
+def build_stage1_turn_content(
+    request: Any,
+    images: Tuple[Any, ...],
+    *,
+    initialize_plan: bool,
+    first_in_window: bool,
+) -> list[dict[str, Any]]:
+    """Build the shared train/inference content for one streaming turn."""
+
+    if not images:
+        raise ValueError("Stage 1 streaming turn requires at least one image")
+    actions = ", ".join(request.allowed_actions)
+    recent_actions = ", ".join(request.action_history) if request.action_history else "None"
+    if initialize_plan:
+        plan_text = "None. Initialize one compact <plan> from the instruction."
+    else:
+        if request.current_plan is None:
+            raise ValueError("later Stage 1 streaming turns require a current plan")
+        plan_text = request.current_plan.to_xml()
+    context_kind = (
+        "window context: historical anchors followed by the current observation"
+        if first_in_window
+        else "the single new current observation after the preceding action chunk"
+    )
+    text = f"""Navigation instruction:
+{request.instruction}
+
+Current compact plan:
+{plan_text}
+
+Executed recent actions (oldest to newest):
+{recent_actions}
+
+Allowed actions:
+{actions}
+
+The images below are {context_kind}. Continue the same navigation episode and output only the required XML."""
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for index, image in enumerate(images, start=1):
         content.append(
             {
                 "type": "text",
-                "text": _frame_label(index, len(request.visual_history)),
+                "text": (
+                    _frame_label(index, len(images))
+                    if first_in_window
+                    else "New current streaming observation:"
+                ),
             }
         )
-        content.append({"type": "image", "image": prepare_qwen3vl_image(rgb)})
-
-    return [
-        {"role": "system", "content": STAGE1_SYSTEM_PROMPT},
-        {"role": "user", "content": content},
-    ]
+        content.append({"type": "image", "image": prepare_qwen3vl_image(image)})
+    return content
 
 
 def _frame_label(index: int, total: int) -> str:
@@ -88,8 +135,8 @@ def _frame_label(index: int, total: int) -> str:
             )
         recent_index = index - DEFAULT_HISTORY_ANCHOR_COUNT
         return (
-            f"Recent consecutive observation {recent_index} of "
-            f"{DEFAULT_RECENT_CONTIGUOUS_COUNT} (oldest to newest):"
+            f"Current streaming observation {recent_index} of "
+            f"{DEFAULT_RECENT_CONTIGUOUS_COUNT}:"
         )
     return f"Observation frame {index} of {total} (oldest to newest):"
 
@@ -176,28 +223,6 @@ class Qwen3VLStage1Policy:
         if len(decoded) != 1:
             raise RuntimeError(f"expected one Stage 1 generation, got {len(decoded)}")
         return decoded[0].strip()
-
-
-def _stage1_context_text(request: Stage1ModelRequest) -> str:
-    actions = ", ".join(request.allowed_actions)
-    recent_actions = ", ".join(request.action_history) if request.action_history else "None"
-    if request.current_plan is None:
-        plan_text = "None. Initialize a compact <plan> from the navigation instruction."
-    else:
-        plan_text = request.current_plan.to_xml()
-    return f"""Navigation instruction:
-{request.instruction}
-
-Current compact plan:
-{plan_text}
-
-Executed recent actions (oldest to newest):
-{recent_actions}
-
-Allowed actions:
-{actions}
-
-Use the observation frames below. Output only the required Stage 1 XML."""
 
 
 def _move_inputs_to_model_device(inputs: Any, model: Any) -> Any:

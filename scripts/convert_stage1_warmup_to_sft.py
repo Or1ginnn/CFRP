@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from vlnce_server.qwen3vl.sft_data import (
     DEFAULT_CONVERSATION_TURNS,
+    DEFAULT_STREAM_HISTORY_ANCHORS,
     make_stage1_sft_conversations,
 )
 from vlnce_server.qwen3vl.vision import qwen3vl_image_size, qwen3vl_processor_kwargs
@@ -111,11 +112,19 @@ def main() -> int:
     (output_dir / "manifest.json").write_text(
         json.dumps(
             {
-                "schema": "cfrp.qwen3vl.stage1_multiturn_sft_manifest.v1",
+                "schema": "cfrp.qwen3vl.stage1_streaming_sft_manifest.v2",
                 "episodes": episodes,
                 "conversation_windows": windows,
                 "supervised_turns": turns,
                 "max_conversation_turns": args.max_conversation_turns,
+                "streaming_visual_contract": {
+                    "history_anchor_count": DEFAULT_STREAM_HISTORY_ANCHORS,
+                    "new_observations_per_turn": 1,
+                    "max_active_dialogue_turns": DEFAULT_CONVERSATION_TURNS,
+                    "max_window_images": (
+                        DEFAULT_STREAM_HISTORY_ANCHORS + DEFAULT_CONVERSATION_TURNS
+                    ),
+                },
                 "unique_images": len(image_cache),
                 "image_workers": args.image_workers,
                 "image_storage": args.image_storage,

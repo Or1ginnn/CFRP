@@ -153,9 +153,9 @@ def _validate_temporal_spec(value: Any, max_visual_history: int) -> None:
 
     expected = temporal_history_spec()
     if dict(value) != expected:
-        raise ValueError("warm-up temporal visual history does not match the CFRP 6+3 contract")
+        raise ValueError("warm-up temporal visual history does not match the CFRP 8+1 contract")
     if max_visual_history != DEFAULT_MODEL_VISUAL_FRAME_COUNT:
-        raise ValueError("6+3 temporal visual history requires max_visual_history=9")
+        raise ValueError("8+1 temporal visual history requires max_visual_history=9")
 
 
 def _validate_temporal_history_paths(

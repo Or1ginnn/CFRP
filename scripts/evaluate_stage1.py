@@ -140,7 +140,7 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.max_lora_rank < 1 or args.max_model_len < 1 or args.max_num_seqs < 1:
         raise ValueError("vLLM capacity arguments must be positive")
     if args.max_visual_history != 9:
-        raise ValueError("Stage 1 evaluation requires the fixed 6+3 visual contract (9 frames)")
+        raise ValueError("Stage 1 evaluation requires the fixed 8+1 visual contract (9 frames)")
     if not 0 < args.gpu_memory_utilization <= 1:
         raise ValueError("gpu-memory-utilization must be in (0, 1]")
     for path in (args.adapter, args.model, args.dataset_root, args.scenes_dir):
@@ -247,7 +247,7 @@ def _write_launch_manifest(
         "seed": args.seed,
         "status": "starting",
         "started_at": int(time.time()),
-        "temporal_visual_contract": "6 slow-memory anchors + 3 recent contiguous frames",
+        "temporal_visual_contract": "8 slow-memory anchors + 1 current streaming frame",
     }
     (output_dir / "launch_manifest.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
@@ -293,7 +293,8 @@ def _vllm_command(args: argparse.Namespace) -> Tuple[List[str], Dict[str, str]]:
             "--max-num-seqs",
             str(args.max_num_seqs),
             "--limit-mm-per-prompt",
-            '{"image":9}',
+            '{"image":16}',
+            "--enable-prefix-caching",
             "--port",
             str(args.vllm_port),
             "--seed",

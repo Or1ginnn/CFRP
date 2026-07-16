@@ -9,7 +9,12 @@ from urllib.parse import unquote, urlparse
 
 from vlnce_server.cfrp import MAX_STAGE1_ACTION_CHUNK, parse_cfrp_output
 
-from .sft_data import SFT_SCHEMA
+from .sft_data import (
+    DEFAULT_CONVERSATION_TURNS,
+    DEFAULT_STREAM_HISTORY_ANCHORS,
+    DEFAULT_STREAM_OBSERVATIONS_PER_TURN,
+    SFT_SCHEMA,
+)
 
 
 _ALLOWED_ACTIONS = ("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP")
@@ -43,6 +48,7 @@ def validate_stage1_sft_example(example: Mapping[str, Any], *, check_images: boo
     messages = example.get("messages")
     images = example.get("images")
     targets = example.get("targets")
+    visual_contract = example.get("visual_contract")
     if not isinstance(messages, list) or len(messages) < 3 or len(messages) % 2 != 1:
         raise ValueError("messages must contain system plus one or more user/assistant turns")
     expected_roles = ["system"] + [
@@ -56,9 +62,20 @@ def validate_stage1_sft_example(example: Mapping[str, Any], *, check_images: boo
         raise ValueError("images must be a non-empty list")
     if not isinstance(targets, list) or len(targets) != (len(messages) - 1) // 2:
         raise ValueError("targets must describe every assistant turn")
+    turn_count = len(targets)
+    if turn_count > DEFAULT_CONVERSATION_TURNS:
+        raise ValueError("conversation exceeds the eight-turn streaming window")
+    expected_contract = {
+        "history_anchor_count": DEFAULT_STREAM_HISTORY_ANCHORS,
+        "new_observations_per_turn": DEFAULT_STREAM_OBSERVATIONS_PER_TURN,
+        "max_active_dialogue_turns": DEFAULT_CONVERSATION_TURNS,
+        "max_window_images": DEFAULT_STREAM_HISTORY_ANCHORS + DEFAULT_CONVERSATION_TURNS,
+    }
+    if visual_contract != expected_contract:
+        raise ValueError("visual_contract does not match the Stage 1 streaming schema")
 
     prompt_images = []
-    for message_index in range(1, len(messages), 2):
+    for turn_index, message_index in enumerate(range(1, len(messages), 2)):
         user_content = messages[message_index].get("content")
         if not isinstance(user_content, list):
             raise ValueError("every user turn must contain multimodal content blocks")
@@ -69,6 +86,11 @@ def validate_stage1_sft_example(example: Mapping[str, Any], *, check_images: boo
         ]
         if not turn_images:
             raise ValueError("every user turn requires at least one image")
+        if turn_index == 0:
+            if len(turn_images) > DEFAULT_STREAM_HISTORY_ANCHORS + 1:
+                raise ValueError("first turn exceeds eight history anchors plus current observation")
+        elif len(turn_images) != DEFAULT_STREAM_OBSERVATIONS_PER_TURN:
+            raise ValueError("later streaming turns must append exactly one current observation")
         prompt_images.extend(turn_images)
     if prompt_images != images:
         raise ValueError("images must match all user image blocks in conversation order")

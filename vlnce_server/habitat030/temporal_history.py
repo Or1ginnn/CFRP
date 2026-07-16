@@ -14,10 +14,10 @@ from dataclasses import dataclass
 from typing import Generic, Sequence, Tuple, TypeVar
 
 
-DEFAULT_VISUAL_CONTEXT_WINDOW = 32
-DEFAULT_HISTORY_ANCHOR_COUNT = 6
-DEFAULT_RECENT_CONTIGUOUS_COUNT = 3
-DEFAULT_SLOW_MEMORY_UPDATE_INTERVAL = 5
+DEFAULT_VISUAL_CONTEXT_WINDOW = 160
+DEFAULT_HISTORY_ANCHOR_COUNT = 8
+DEFAULT_RECENT_CONTIGUOUS_COUNT = 1
+DEFAULT_SLOW_MEMORY_UPDATE_INTERVAL = 1
 DEFAULT_MODEL_VISUAL_FRAME_COUNT = (
     DEFAULT_HISTORY_ANCHOR_COUNT + DEFAULT_RECENT_CONTIGUOUS_COUNT
 )
@@ -29,10 +29,10 @@ T = TypeVar("T")
 class SlowFastVisualHistory(Generic[T]):
     """Bounded raw context plus a slowly refreshed visual-memory snapshot.
 
-    The first nine observations are visible without padding.  Once the visual
-    budget is full, six slow-memory keyframes are refreshed every configured
-    interval from the earlier portion of the raw context; the latest three
-    observations remain a dense fast stream on every decision.
+    The first nine observations are visible without padding. Once the visual
+    budget is full, eight slow-memory keyframes are refreshed every configured
+    interval from the earlier route context; the latest observation is the
+    active streaming frame for the next decision.
     """
 
     context: Tuple[T, ...] = tuple()

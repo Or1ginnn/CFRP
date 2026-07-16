@@ -29,6 +29,12 @@ def test_sft_example_preserves_multimodal_stage1_contract():
     )
 
     assert example["schema"] == SFT_SCHEMA
+    assert example["visual_contract"] == {
+        "history_anchor_count": 8,
+        "new_observations_per_turn": 1,
+        "max_active_dialogue_turns": 8,
+        "max_window_images": 16,
+    }
     assert example["images"] == ["file:///output/frame.png"]
     assert example["messages"][-1]["role"] == "assistant"
     assert example["messages"][-1]["content"].startswith("<plan>")
@@ -93,3 +99,48 @@ def test_episode_becomes_bounded_multiturn_windows_with_incremental_images():
     ]
     assert windows[0]["targets"][0]["initializes_plan"] is True
     assert windows[0]["targets"][1]["initializes_plan"] is False
+
+
+def test_eight_turn_window_appends_only_one_current_observation_per_turn():
+    current_plan = PlanState(
+        global_goal="reach hallway",
+        points=(PlanPoint("p1", "current", "reach hallway"),),
+    )
+    records = []
+    image_rows = []
+    for turn in range(8):
+        request = Stage1RolloutRequest(
+            episode_id="stream",
+            request_id=turn,
+            turn_index=turn * 3,
+            instruction="Reach the hallway.",
+            current_plan=current_plan,
+            visual_history_paths=tuple(f"/source/a-{index}.npy" for index in range(8))
+            + (f"/source/current-{turn}.npy",),
+            action_history=tuple(),
+            allowed_actions=("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP"),
+        )
+        records.append(
+            {
+                "model_input": request.to_dict(),
+                "target_xml": (
+                    "<progress>hold</progress><subgoal>reach hallway</subgoal>"
+                    "<action>MOVE_FORWARD</action>"
+                ),
+            }
+        )
+        image_rows.append(
+            tuple(f"file:///anchors/a-{index}.png" for index in range(8))
+            + (f"file:///current/{turn}.png",)
+        )
+
+    windows = make_stage1_sft_conversations(records, image_rows)
+
+    assert len(windows) == 1
+    user_messages = windows[0]["messages"][1::2]
+    image_counts = [
+        sum(item["type"] == "image" for item in message["content"])
+        for message in user_messages
+    ]
+    assert image_counts == [9, 1, 1, 1, 1, 1, 1, 1]
+    assert len(windows[0]["images"]) == 16

@@ -7,14 +7,22 @@ The first episode turn supervises compact `<plan>` initialization together
 with progress, subgoal, and one to three comma-separated primitive actions.
 Later turns receive the controller-owned plan and must not repeat it.
 
-The default window contains at most four user/assistant navigation turns. Its
-first turn receives the full visible slow-fast context; later turns append the
-one to three newly arrived contiguous frames produced by the preceding action
-chunk. Frames are stored once per episode and referenced from windows.
+The default window contains at most eight user/assistant navigation turns. Its
+first turn receives up to eight uniformly sampled historical route anchors
+followed by the current observation. Later turns append exactly one current
+observation after the preceding action chunk. A window therefore contains at
+most sixteen images, matching StreamVLN's eight-turn slow-fast organization
+without importing its additional datasets or LLaVA-specific token plumbing.
+Frames are stored once per episode and referenced from windows.
 For the formal full-split run, the SFT manifest references the collected NPY
 frames directly; the weighted trainer loads each referenced frame and resizes it
 to 384x288 in memory before the Qwen3-VL processor. Portable PNG export remains
 available for small smoke manifests, but must not duplicate the full raw corpus.
+
+Previously collected complete expert episodes remain valid raw data. Run
+`resample_stage1_warmup_visual_history.py` to rewrite only their JSON frame
+references to the 8+1 contract, then reconvert them with the default eight-turn
+window. The migration must not rerun Habitat or copy the retained NPY frames.
 
 ## Objective
 
@@ -52,15 +60,21 @@ split, pads only the final DDP shard deterministically, logs rank-zero metrics
 to W&B, and writes rank-zero PEFT checkpoints every configured optimizer-step
 interval.
 
-Typical formal settings are `r=32`, `alpha=64`, three epochs, gradient
+Formal settings are `r=32`, `alpha=64`, two epochs, gradient
 accumulation eight, and a two-percent episode-level validation split. The
-visual contract remains 640x480 Habitat render, Qwen input 384x288, six slow
-memory anchors plus three recent consecutive frames.
+visual contract remains 640x480 Habitat render and Qwen input 384x288. The
+streaming context uses eight route anchors plus one current frame at a window
+boundary, then one new current frame per dialogue turn.
 
 The full R2R run uses two epochs, ten evenly spaced validations over one fixed
 200-window subset, and five evenly spaced LoRA checkpoints. Milestones are
 derived from the actual DDP optimizer-step count instead of being hard-coded,
 and the final optimizer step is always both validated and checkpointed.
+
+Evaluation keeps one bounded conversation per episode. It appends the latest
+observation and previous assistant response for eight turns, then opens a new
+window from the controller-owned plan and refreshed 8+1 context. vLLM prefix
+caching is enabled explicitly; correctness does not depend on a cache hit.
 
 Recovery tools are deliberately absent here. Valid `continue/replan` labels
 require model-error states and counterfactual evidence, so they remain in the

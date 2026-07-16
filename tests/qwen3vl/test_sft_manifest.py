@@ -29,6 +29,12 @@ def example():
         "window_index": 1,
         "start_turn_index": 3,
         "end_turn_index": 3,
+        "visual_contract": {
+            "history_anchor_count": 8,
+            "new_observations_per_turn": 1,
+            "max_active_dialogue_turns": 8,
+            "max_window_images": 16,
+        },
         "images": ["file:///tmp/frame.png"],
         "targets": [
             {

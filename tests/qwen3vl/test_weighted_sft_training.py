@@ -8,6 +8,7 @@ from scripts.train_qwen3vl_stage1_sft import (
     _optimizer_step_count,
     _require_visual_tensors,
     _split_examples_by_episode,
+    _unwrap_distributed_model,
 )
 import pytest
 
@@ -43,6 +44,14 @@ def test_ddp_train_shards_have_equal_micro_step_counts():
     assert {item["episode_id"] for shard in shards for item in shard}.issuperset(
         {item["episode_id"] for item in examples}
     )
+
+
+def test_distributed_model_is_unwrapped_for_uneven_validation_shards():
+    inner = object()
+    wrapper = SimpleNamespace(module=inner)
+
+    assert _unwrap_distributed_model(wrapper) is inner
+    assert _unwrap_distributed_model(inner) is inner
 
 
 def test_optimizer_step_count_respects_epochs_and_global_micro_step_limit():

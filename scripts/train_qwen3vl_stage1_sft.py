@@ -536,18 +536,26 @@ def _evaluate(
     import torch
 
     model.eval()
+    evaluation_model = _unwrap_distributed_model(model)
     loss_sum = torch.zeros((), device=runtime.device, dtype=torch.float32)
     count = torch.zeros((), device=runtime.device, dtype=torch.float32)
     with torch.no_grad():
         for example in examples:
             inputs, labels, token_weights = _supervised_inputs(processor, example, runtime.device, args)
-            loss_sum += _weighted_causal_lm_loss(model(**inputs).logits, labels, token_weights).float()
+            loss_sum += _weighted_causal_lm_loss(
+                evaluation_model(**inputs).logits, labels, token_weights
+            ).float()
             count += 1
     if runtime.distributed:
         torch.distributed.all_reduce(loss_sum)
         torch.distributed.all_reduce(count)
     model.train()
     return float((loss_sum / count.clamp_min(1)).item()) if count.item() else float("nan")
+
+
+def _unwrap_distributed_model(model: Any) -> Any:
+    """Bypass DDP forward collectives for uneven per-rank evaluation shards."""
+    return model.module if hasattr(model, "module") else model
 
 
 def _mean_across_ranks(loss: Any, runtime: _Runtime) -> float:
@@ -566,7 +574,7 @@ def _save_adapter(model: Any, processor: Any, path: Path, runtime: _Runtime) -> 
         imported_torch.distributed.barrier()
     if runtime.is_main:
         path.mkdir(parents=True, exist_ok=True)
-        target_model = model.module if hasattr(model, "module") else model
+        target_model = _unwrap_distributed_model(model)
         target_model.save_pretrained(path)
         processor.save_pretrained(path / "processor")
     if runtime.distributed:

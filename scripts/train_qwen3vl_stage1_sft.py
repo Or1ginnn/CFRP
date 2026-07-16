@@ -53,6 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subgoal-loss-weight", type=float, default=DEFAULT_SUBGOAL_LOSS_WEIGHT)
     parser.add_argument("--validation-fraction", type=float, default=0.02)
     parser.add_argument("--save-every-optimizer-steps", type=int, default=100)
+    parser.add_argument("--validation-runs", type=int, default=0)
+    parser.add_argument("--validation-max-examples", type=int)
+    parser.add_argument("--checkpoint-count", type=int, default=0)
     parser.add_argument("--wandb-project")
     parser.add_argument("--run-name")
     parser.add_argument("--max-examples", type=int)
@@ -74,6 +77,10 @@ def main() -> int:
         raise ValueError("warmup-ratio must be in [0, 1)")
     if args.save_every_optimizer_steps < 1:
         raise ValueError("save-every-optimizer-steps must be positive")
+    if args.validation_runs < 0 or args.checkpoint_count < 0:
+        raise ValueError("validation-runs and checkpoint-count must not be negative")
+    if args.validation_max_examples is not None and args.validation_max_examples < 1:
+        raise ValueError("validation-max-examples must be positive")
     examples = load_stage1_sft_jsonl(args.train_jsonl)
     if args.max_examples is not None:
         examples = examples[: args.max_examples]
@@ -84,6 +91,11 @@ def main() -> int:
     )
     if not train_examples:
         raise ValueError("validation split left no training examples")
+    validation_examples = _fixed_validation_examples(
+        validation_examples,
+        args.validation_max_examples,
+        args.seed,
+    )
     output_dir = Path(args.output_dir)
     if output_dir.exists():
         raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
@@ -145,15 +157,18 @@ def main() -> int:
     model.train()
     local_train_examples = _equal_train_shard(train_examples, runtime.rank, runtime.world_size)
     local_validation_examples = validation_examples[runtime.rank :: runtime.world_size]
+    total_optimizer_steps = _optimizer_step_count(len(local_train_examples), args)
+    validation_steps = _milestone_steps(total_optimizer_steps, args.validation_runs)
+    checkpoint_steps = _milestone_steps(total_optimizer_steps, args.checkpoint_count)
     optimizer = torch.optim.AdamW((item for item in model.parameters() if item.requires_grad), lr=args.learning_rate)
     scheduler = _cosine_scheduler(
         optimizer,
-        total_steps=_optimizer_step_count(len(local_train_examples), args),
+        total_steps=total_optimizer_steps,
         warmup_ratio=args.warmup_ratio,
     )
     wandb_run = _start_wandb(args, runtime, examples, train_examples, validation_examples)
     try:
-        micro_steps, optimizer_steps = _train(
+        micro_steps, optimizer_steps, validation_loss = _train(
             model,
             processor,
             optimizer,
@@ -163,12 +178,9 @@ def main() -> int:
             args,
             runtime,
             wandb_run,
+            validation_steps=validation_steps,
+            checkpoint_steps=checkpoint_steps,
         )
-        validation_loss = _evaluate(
-            model, processor, local_validation_examples, args, runtime
-        )
-        if wandb_run is not None:
-            wandb_run.log({"validation/loss": validation_loss, "train/optimizer_steps": optimizer_steps})
         _save_adapter(model, processor, output_dir / "adapter", runtime)
         if runtime.is_main:
             _write_run_manifest(
@@ -181,6 +193,8 @@ def main() -> int:
                 validation_examples=len(validation_examples),
                 validation_loss=validation_loss,
                 distributed_world_size=runtime.world_size,
+                validation_steps=validation_steps,
+                checkpoint_steps=checkpoint_steps,
             )
             print(f"examples={len(examples)} train={len(train_examples)} validation={len(validation_examples)}")
             print(f"micro_steps_per_rank={micro_steps}")
@@ -355,6 +369,34 @@ def _stable_unit_interval(value: str) -> float:
     return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
 
+def _fixed_validation_examples(
+    examples: list[dict[str, Any]], maximum: int | None, seed: int
+) -> list[dict[str, Any]]:
+    """Choose a stable validation window subset without changing episode isolation."""
+
+    if maximum is None or maximum >= len(examples):
+        return list(examples)
+    return sorted(
+        examples,
+        key=lambda item: hashlib.sha256(
+            f"{seed}:{item['episode_id']}:{item['window_index']}".encode("utf-8")
+        ).digest(),
+    )[:maximum]
+
+
+def _milestone_steps(total_steps: int, count: int) -> tuple[int, ...]:
+    """Return evenly spaced one-based optimizer steps, always including the final step."""
+
+    if count == 0:
+        return tuple()
+    if total_steps < 1 or count > total_steps:
+        raise ValueError("milestone count must not exceed total optimizer steps")
+    steps = tuple(round(total_steps * index / count) for index in range(1, count + 1))
+    if len(set(steps)) != count or steps[-1] != total_steps:
+        raise RuntimeError("failed to construct unique optimizer milestones")
+    return steps
+
+
 def _equal_train_shard(
     examples: list[dict[str, Any]], rank: int, world_size: int
 ) -> list[dict[str, Any]]:
@@ -403,11 +445,17 @@ def _train(
     args: argparse.Namespace,
     runtime: _Runtime,
     wandb_run: Any,
-) -> tuple[int, int]:
+    *,
+    validation_steps: tuple[int, ...] = tuple(),
+    checkpoint_steps: tuple[int, ...] = tuple(),
+) -> tuple[int, int, float]:
     optimizer.zero_grad(set_to_none=True)
     remaining_micro_steps = args.max_steps
     total_micro_steps = 0
     optimizer_steps = 0
+    validation_loss = float("nan")
+    validation_step_set = set(validation_steps)
+    checkpoint_step_set = set(checkpoint_steps)
     for epoch in range(args.epochs):
         max_micro_steps = (
             len(examples)
@@ -447,14 +495,33 @@ def _train(
                     },
                     step=optimizer_steps,
                 )
-            if optimizer_steps % args.save_every_optimizer_steps == 0:
+            should_save = (
+                optimizer_steps in checkpoint_step_set
+                if checkpoint_step_set
+                else optimizer_steps % args.save_every_optimizer_steps == 0
+            )
+            if should_save:
                 _save_adapter(model, processor, Path(args.output_dir) / f"checkpoint-{optimizer_steps}", runtime)
-        validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
-        if wandb_run is not None and validation_loss == validation_loss:
-            wandb_run.log({"validation/loss": validation_loss, "train/epoch": epoch + 1}, step=optimizer_steps)
+            if optimizer_steps in validation_step_set:
+                validation_loss = _evaluate(
+                    model, processor, validation_examples, args, runtime
+                )
+                if wandb_run is not None and validation_loss == validation_loss:
+                    wandb_run.log(
+                        {"validation/loss": validation_loss}, step=optimizer_steps
+                    )
+        if not validation_step_set:
+            validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
+            if wandb_run is not None and validation_loss == validation_loss:
+                wandb_run.log(
+                    {"validation/loss": validation_loss, "train/epoch": epoch + 1},
+                    step=optimizer_steps,
+                )
         if remaining_micro_steps is not None:
             remaining_micro_steps -= max_micro_steps
-    return total_micro_steps, optimizer_steps
+    if validation_step_set and optimizer_steps not in validation_step_set:
+        validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
+    return total_micro_steps, optimizer_steps, validation_loss
 
 
 def _evaluate(
@@ -529,6 +596,9 @@ def _start_wandb(
             "supervised_turns": _supervised_turn_count(examples),
             "train_windows": len(train_examples),
             "validation_windows": len(validation_examples),
+            "validation_runs": args.validation_runs,
+            "validation_max_examples": args.validation_max_examples,
+            "checkpoint_count": args.checkpoint_count,
             "lora_rank": args.lora_rank,
             "lora_alpha": args.lora_alpha,
             "action_loss_weight": args.action_loss_weight,
@@ -602,6 +672,8 @@ def _write_run_manifest(
     validation_examples: int | None = None,
     validation_loss: float | None = None,
     distributed_world_size: int = 1,
+    validation_steps: tuple[int, ...] = tuple(),
+    checkpoint_steps: tuple[int, ...] = tuple(),
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "run_manifest.json").write_text(
@@ -616,6 +688,11 @@ def _write_run_manifest(
                 "supervised_turns": _supervised_turn_count(examples),
                 "train_examples": len(examples) if train_examples is None else train_examples,
                 "validation_examples": 0 if validation_examples is None else validation_examples,
+                "validation_runs": args.validation_runs,
+                "validation_max_examples": args.validation_max_examples,
+                "checkpoint_count": args.checkpoint_count,
+                "validation_steps": list(validation_steps),
+                "checkpoint_steps": list(checkpoint_steps),
                 "epochs": args.epochs,
                 "learning_rate": args.learning_rate,
                 "warmup_ratio": args.warmup_ratio,

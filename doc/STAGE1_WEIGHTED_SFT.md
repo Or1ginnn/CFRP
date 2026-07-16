@@ -57,6 +57,11 @@ accumulation eight, and a two-percent episode-level validation split. The
 visual contract remains 640x480 Habitat render, Qwen input 384x288, six slow
 memory anchors plus three recent consecutive frames.
 
+The full R2R run uses two epochs, ten evenly spaced validations over one fixed
+200-window subset, and five evenly spaced LoRA checkpoints. Milestones are
+derived from the actual DDP optimizer-step count instead of being hard-coded,
+and the final optimizer step is always both validated and checkpointed.
+
 Recovery tools are deliberately absent here. Valid `continue/replan` labels
 require model-error states and counterfactual evidence, so they remain in the
 later recovery warm-up rather than being fabricated from successful expert

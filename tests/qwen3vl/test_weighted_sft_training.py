@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from scripts.preflight_qwen3vl_stage1_sft import _processor_sample
 from scripts.train_qwen3vl_stage1_sft import (
     _equal_train_shard,
+    _fixed_validation_examples,
+    _milestone_steps,
     _optimizer_step_count,
     _require_visual_tensors,
     _split_examples_by_episode,
@@ -50,6 +52,35 @@ def test_optimizer_step_count_respects_epochs_and_global_micro_step_limit():
 
     args.max_steps = 10
     assert _optimizer_step_count(2203, args) == 2
+
+
+def test_milestones_match_formal_training_schedule():
+    assert _milestone_steps(4660, 10) == (
+        466,
+        932,
+        1398,
+        1864,
+        2330,
+        2796,
+        3262,
+        3728,
+        4194,
+        4660,
+    )
+    assert _milestone_steps(4660, 5) == (932, 1864, 2796, 3728, 4660)
+
+
+def test_fixed_validation_subset_is_order_independent():
+    examples = [
+        {"episode_id": str(index // 3), "window_index": index % 3}
+        for index in range(30)
+    ]
+
+    first = _fixed_validation_examples(examples, 10, 123)
+    second = _fixed_validation_examples(list(reversed(examples)), 10, 123)
+
+    assert first == second
+    assert len(first) == 10
 
 
 def test_visual_sft_requires_vit_inputs():

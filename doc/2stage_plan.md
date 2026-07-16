@@ -228,12 +228,14 @@ Plan = editable recovery control state
 
 ## 6. 每步模型输入
 
-每一步只使用固定预算上下文，不累积完整对话历史。
+每一步只使用固定预算上下文，不无限累积完整对话历史。Phase 0 使用 bounded
+streaming conversation：一个窗口最多保留 8 个连续 user/assistant 导航 turn；窗口
+边界刷新慢视觉记忆，窗口内部每轮只追加当前观测。
 
 ```text
 Full instruction
-Current high-resolution observation
-Recent visual history (K frames or compact captions)
+Eight slow-memory route anchors at a window boundary
+One new high-resolution current observation per turn
 Recent action history (K actions)
 Current compact plan
 Allowed primitive actions
@@ -254,14 +256,18 @@ x_t=(I,P_t,O_{t-K:t},A_{t-K:t-1},\mathcal A_t)
 - \(A_{t-K:t-1}\)：最近动作历史；
 - \(\mathcal A_t\)：当前环境允许的 primitive actions。
 
-推荐第一版：
+Phase 0 固定配置：
 
 ```text
-K_visual = 6
+K_visual_anchor = 8
+K_visual_current = 1
 K_action = 8
+K_dialogue_turn = 8
 ```
 
-后续通过消融确定最佳窗口。
+窗口首轮最多输入 8 个历史 route anchors 和 1 个 current observation；后续轮只
+追加 1 个新 current observation。该预算可在后续消融中调整，但 Phase 0 的训练与
+评测必须使用同一配置。
 
 ---
 

@@ -214,7 +214,7 @@ Stage 1 中 controller 可根据 progress=advance 执行 current -> done、next 
 ```xml
 <progress>hold</progress>
 <subgoal>short local navigation instruction</subgoal>
-<action>ONE_ALLOWED_ACTION</action>
+<action>ONE_TO_THREE_COMMA_SEPARATED_ALLOWED_ACTIONS</action>
 ```
 
 `progress` 只能为 `hold/advance`。它只推进正常 plan cursor，不允许重写、放弃或
@@ -227,10 +227,12 @@ Stage 1 中 controller 可根据 progress=advance 执行 current -> done、next 
 <plan_update>
 <risk>language token</risk>
 free-form reasoning
-multiple actions
+more than three actions
 ```
 
-Risk 只能由 MLP head 返回。
+`<action>` 始终只出现一次，其 payload 可以包含 1--3 个按执行顺序
+排列的 primitive actions。Controller 在请求下一轮模型输出前执行完该 action
+chunk；`STOP` 必须单独出现。Risk 只能由 MLP head 返回。
 
 验收：
 

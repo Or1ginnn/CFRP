@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-visual-history", type=int, default=9)
     parser.add_argument("--max-action-history", type=int, default=8)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--response-timeout", type=float, default=600.0)
     parser.add_argument("--success-distance", type=float, default=3.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -238,6 +238,7 @@ def _write_launch_manifest(
         "step_unit": "habitat_primitive_action",
         "max_visual_history": args.max_visual_history,
         "max_action_history": args.max_action_history,
+        "max_new_tokens": args.max_new_tokens,
         "save_video": args.save_video,
         "save_frames": args.save_frames,
         "save_oracle_trace": args.save_oracle_trace,

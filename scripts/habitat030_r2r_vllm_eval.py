@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-visual-history", type=int, default=DEFAULT_MAX_VISUAL_HISTORY)
     parser.add_argument("--max-action-history", type=int, default=DEFAULT_MAX_ACTION_HISTORY)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--response-timeout", type=float, default=600.0)
     parser.add_argument("--success-distance", type=float, default=3.0)
     parser.add_argument("--save-frames", action="store_true", help="Keep raw RGB frames in addition to videos")

@@ -5,11 +5,10 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 
-# Match the established ActiveVLN / InternNav Habitat camera rather than the
-# old lightweight 128px smoke setting.
+# Match JanusVLN's R2R camera contract rather than the old 128px smoke setting.
 HABITAT_RGB_WIDTH = 640
 HABITAT_RGB_HEIGHT = 480
-HABITAT_RGB_HFOV = 90
+HABITAT_RGB_HFOV = 79
 
 # Qwen3-VL resizes to multiples of its 32px visual merge unit.  384x288 is an
 # exact 4:3 camera frame whose two sides are both aligned, so Qwen does not

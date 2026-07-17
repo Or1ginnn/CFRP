@@ -11,9 +11,10 @@ or recovery.
 
 The local reference clone at `third_party/JanusVLN` preserves
 MIV-XJTU/JanusVLN at commit
-`64ac8373c1e3c4a810a999cad536f633f2277d68`. We reuse its expert-imitation
-sample organization, not its Qwen2.5-VL-7B model, VGGT module, Habitat version,
-or full-parameter training runtime. The upstream snapshot is ignored by the
+`64ac8373c1e3c4a810a999cad536f633f2277d68`. We reuse its R2R simulator
+geometry, force-expert reference-path follower, temporal sampling, and
+one-action imitation target. We do not reuse its Qwen2.5-VL-7B model, VGGT
+module, Habitat version, or full-parameter training runtime. The upstream snapshot is ignored by the
 CFRP repository because it does not include a root license file; this document
 and the CFRP implementation retain the exact provenance without republishing
 the upstream source tree.
@@ -32,10 +33,19 @@ decisions contain nine uniformly sampled frames from episode start through the
 current frame. The current frame is always last. Only one of
 `MOVE_FORWARD`, `TURN_LEFT`, `TURN_RIGHT`, or `STOP` is legal.
 
-The converter reconstructs primitive actions from `oracle_only.oracle_actions`
-in the existing warmup JSONL. It deliberately discards old plan, progress,
-subgoal, and multi-action chunk labels, so the already collected Habitat frames
-do not need to be regenerated.
+The formal collection contract is fixed to JanusVLN's R2R settings:
+
+- Habitat render: 640x480, RGB/depth HFOV 79 degrees;
+- primitive geometry: 0.25m forward and 15-degree turns;
+- episode cap and success: 500 primitive actions and 3.0m;
+- force-expert follower: 1.8m for intermediate reference waypoints and 0.25m
+  for the final waypoint;
+- stored model frame: 384x288 JPEG, produced once at collection time.
+
+The old 10-degree, 0.2m-waypoint warmup collection is not a formal JanusVLN
+baseline. Its future observations were rendered from different headings, so it
+cannot be repaired by relabeling turns. The action-only trainer rejects that
+legacy manifest.
 
 ## Training contract
 
@@ -55,15 +65,21 @@ Use `scripts/train_qwen3vl_stage1_sft.py --contract action-only`. The existing
 
 ## Commands
 
-Convert an existing complete expert warmup collection without rerunning
-Habitat:
+Collect a small direct action-SFT gate with the Habitat 0.3 environment:
 
 ```bash
-python scripts/convert_stage1_warmup_to_action_sft.py \
-  --input-jsonl /path/to/merged/stage1_warmup.jsonl \
-  --output-dir /path/to/action_sft \
-  --image-storage source
+python scripts/habitat030_collect_janus_action_sft.py \
+  --dataset-root /path/to/R2R_VLNCE_v1-3_preprocessed \
+  --scenes-dir /path/to/scene_datasets \
+  --config /path/to/pointnav_habitat_test.yaml \
+  --split train \
+  --episode-count 3 \
+  --episode-offset 0 \
+  --output-dir /path/to/janus_action_sft_gate
 ```
+
+For the full split, use `scripts/launch_janus_action_sft_collection.py`, then
+merge only complete shards with `scripts/merge_janus_action_sft_shards.py`.
 
 Audit the resulting primitive trajectories before training:
 
@@ -84,10 +100,8 @@ python scripts/train_qwen3vl_stage1_sft.py \
   --dry-run
 ```
 
-For four-GPU training, increase the real micro-batch first and reduce gradient
-accumulation by the same factor so the effective batch remains stable. For
-example, `--per-device-batch-size 4 --gradient-accumulation 2` keeps the global
-batch at 32. Disable activation checkpointing only after a GPU memory smoke:
+The measured four-GPU 4090 starting point is micro-batch 2, accumulation 4,
+gradient checkpointing enabled, for a global batch of 32:
 
 ```bash
 torchrun --standalone --nproc-per-node 4 scripts/train_qwen3vl_stage1_sft.py \
@@ -95,9 +109,9 @@ torchrun --standalone --nproc-per-node 4 scripts/train_qwen3vl_stage1_sft.py \
   --train-jsonl /path/to/action_sft.jsonl \
   --model /path/to/Qwen3-VL-4B-Instruct \
   --output-dir /path/to/run \
-  --per-device-batch-size 4 \
-  --gradient-accumulation 2 \
-  --no-gradient-checkpointing \
+  --per-device-batch-size 2 \
+  --gradient-accumulation 4 \
+  --gradient-checkpointing \
   --stop-file /path/to/run.STOP
 ```
 
@@ -113,9 +127,9 @@ torchrun --standalone --nproc-per-node 4 scripts/train_qwen3vl_stage1_sft.py \
   --train-jsonl /path/to/action_sft.jsonl \
   --model /path/to/Qwen3-VL-4B-Instruct \
   --output-dir /path/to/run \
-  --per-device-batch-size 4 \
-  --gradient-accumulation 2 \
-  --no-gradient-checkpointing \
+  --per-device-batch-size 2 \
+  --gradient-accumulation 4 \
+  --gradient-checkpointing \
   --stop-file /path/to/run.STOP \
   --resume-from-checkpoint /path/to/run/interrupt-checkpoint
 ```
@@ -131,7 +145,8 @@ SPL credit.
 
 ## Execution order
 
-1. Convert a small R2R expert shard and validate every image/action pair.
+1. Collect a small R2R expert shard and validate every image/action pair and
+   every simulator/oracle manifest field.
 2. Run a two-step LoRA smoke and a small closed-loop Habitat evaluation.
 3. Convert and train on all R2R train expert episodes.
 4. Add EnvDrop expert trajectories after the R2R-only baseline is measurable.

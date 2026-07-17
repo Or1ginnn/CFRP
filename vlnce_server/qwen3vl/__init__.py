@@ -26,8 +26,10 @@ from .vision import (
 from .action_sft import (
     ACTION_SFT_MAX_FRAMES,
     ACTION_SFT_SCHEMA,
+    JANUS_ACTION_COLLECTION_SCHEMA,
     load_action_sft_jsonl,
     make_action_sft_example,
+    validate_janus_action_sft_manifest,
     validate_action_sft_example,
 )
 from .action_policy import ActionModelRequest, build_action_messages, parse_action_xml
@@ -57,8 +59,10 @@ __all__ = [
     "make_openai_messages",
     "ACTION_SFT_MAX_FRAMES",
     "ACTION_SFT_SCHEMA",
+    "JANUS_ACTION_COLLECTION_SCHEMA",
     "load_action_sft_jsonl",
     "make_action_sft_example",
+    "validate_janus_action_sft_manifest",
     "validate_action_sft_example",
     "ActionModelRequest",
     "build_action_messages",

@@ -255,6 +255,13 @@ x_t=(I,O_{s_1:s_9=t},\mathcal A_t)
 Phase 0 固定配置：
 
 ```text
+habitat_rgb = 640x480, hfov = 79
+forward_step_size = 0.25m
+turn_angle = 15 degrees
+max_episode_steps = 500
+success_distance = 3.0m
+expert_waypoint_radius = 1.8m intermediate / 0.25m final
+stored_model_frame = 384x288 JPEG
 K_visual_total <= 9
 current_frame_last = true
 target_actions = 1

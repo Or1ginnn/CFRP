@@ -12,6 +12,7 @@ from .sft_manifest import local_image_path
 
 
 ACTION_SFT_SCHEMA = "cfrp.qwen3vl.action_sft.v1"
+JANUS_ACTION_COLLECTION_SCHEMA = "cfrp.qwen3vl.janus_action_sft_collection.v1"
 ACTION_SFT_MAX_FRAMES = 9
 ALLOWED_ACTIONS = ("MOVE_FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP")
 
@@ -108,8 +109,13 @@ def make_action_sft_example(
     return example
 
 
-def load_action_sft_jsonl(path: str | Path) -> list[dict[str, Any]]:
+def load_action_sft_jsonl(
+    path: str | Path,
+    *,
+    require_janus_contract: bool = False,
+) -> list[dict[str, Any]]:
     source = Path(path)
+    manifest = validate_janus_action_sft_manifest(source) if require_janus_contract else None
     examples: list[dict[str, Any]] = []
     with source.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -123,7 +129,65 @@ def load_action_sft_jsonl(path: str | Path) -> list[dict[str, Any]]:
             examples.append(example)
     if not examples:
         raise ValueError(f"action SFT manifest is empty: {source}")
+    if manifest is not None and int(manifest.get("examples", -1)) != len(examples):
+        raise ValueError("Janus action SFT manifest example count does not match JSONL")
     return examples
+
+
+def validate_janus_action_sft_manifest(path: str | Path) -> dict[str, Any]:
+    """Reject action data not collected under the exact JanusVLN contract."""
+
+    source = Path(path)
+    manifest_path = source.parent / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"Janus action SFT manifest is required: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != JANUS_ACTION_COLLECTION_SCHEMA:
+        raise ValueError("action SFT was not produced by the JanusVLN-compatible collector")
+    if manifest.get("status") != "complete":
+        raise ValueError("Janus action SFT collection is not complete")
+
+    from vlnce_server.habitat030.r2r_environment import (
+        janus_r2r_oracle_contract,
+        janus_r2r_simulator_contract,
+    )
+    from .vision import (
+        HABITAT_RGB_HEIGHT,
+        HABITAT_RGB_WIDTH,
+        qwen3vl_image_size,
+        qwen3vl_processor_kwargs,
+    )
+
+    if manifest.get("simulator_contract") != janus_r2r_simulator_contract():
+        raise ValueError("action SFT simulator contract does not match JanusVLN")
+    if int(manifest.get("max_steps", -1)) != int(
+        janus_r2r_simulator_contract()["max_episode_steps"]
+    ):
+        raise ValueError("action SFT episode cap does not match JanusVLN")
+    if manifest.get("oracle_policy") != janus_r2r_oracle_contract():
+        raise ValueError("action SFT oracle policy does not match JanusVLN")
+    requested = [str(value) for value in manifest.get("requested_episode_ids", ())]
+    completed = [str(value) for value in manifest.get("completed_episode_ids", ())]
+    if not requested or requested != completed:
+        raise ValueError("action SFT requested and completed episode IDs must match")
+    temporal = manifest.get("temporal_visual_contract")
+    if temporal != {
+        "sampling": "janus_uniform_episode_prefix",
+        "max_frames": ACTION_SFT_MAX_FRAMES,
+        "current_frame_last": True,
+    }:
+        raise ValueError("action SFT temporal visual contract does not match JanusVLN")
+    visual = manifest.get("visual_contract")
+    if not isinstance(visual, Mapping) or any(
+        (
+            visual.get("habitat_rgb_size") != [HABITAT_RGB_WIDTH, HABITAT_RGB_HEIGHT],
+            visual.get("stored_model_image_size") != list(qwen3vl_image_size()),
+            visual.get("storage") != "jpeg",
+            visual.get("processor_kwargs") != qwen3vl_processor_kwargs(),
+        )
+    ):
+        raise ValueError("action SFT stored image size does not match Qwen3-VL input")
+    return manifest
 
 
 def validate_action_sft_example(example: Mapping[str, Any], *, check_images: bool = False) -> None:

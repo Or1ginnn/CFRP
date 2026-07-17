@@ -146,8 +146,13 @@ def main() -> int:
         raise ValueError("validation-runs and checkpoint-count must not be negative")
     if args.validation_max_examples is not None and args.validation_max_examples < 1:
         raise ValueError("validation-max-examples must be positive")
-    loader = load_action_sft_jsonl if args.contract == "action-only" else load_stage1_sft_jsonl
-    examples = loader(args.train_jsonl)
+    if args.contract == "action-only":
+        examples = load_action_sft_jsonl(
+            args.train_jsonl,
+            require_janus_contract=True,
+        )
+    else:
+        examples = load_stage1_sft_jsonl(args.train_jsonl)
     if args.max_examples is not None:
         examples = examples[: args.max_examples]
     if not examples:

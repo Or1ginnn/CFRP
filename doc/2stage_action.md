@@ -191,6 +191,11 @@ target: exactly one primitive expert action
 no plan/progress/subgoal/tool/action queue
 ```
 
+固定复刻 JanusVLN 的 R2R 行为契约：`640x480/HFOV 79` 渲染、`0.25m`
+前进、`15°` 转向、500 primitive-action 上限、3m success；reference-path
+follower 对中间 waypoint 使用 1.8m，对最终 waypoint 使用 0.25m。采集时只将
+模型实际读取的 384x288 JPEG 落盘。旧 10°/0.2m 数据不得进入正式 Phase 0 训练。
+
 验收：
 
 - 每个 action 与执行前的 current frame 严格对齐；

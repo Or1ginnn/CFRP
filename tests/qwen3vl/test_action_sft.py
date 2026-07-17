@@ -7,11 +7,18 @@ import pytest
 
 from vlnce_server.qwen3vl.action_sft import (
     ACTION_SFT_SCHEMA,
+    JANUS_ACTION_COLLECTION_SCHEMA,
     janus_frame_indices,
     load_action_sft_jsonl,
     make_action_sft_example,
     validate_action_sft_example,
 )
+from vlnce_server.habitat030.r2r_environment import (
+    janus_r2r_oracle_contract,
+    janus_r2r_simulator_contract,
+)
+from vlnce_server.qwen3vl.vision import qwen3vl_image_size
+from vlnce_server.qwen3vl.vision import qwen3vl_processor_kwargs
 from scripts.convert_stage1_warmup_to_action_sft import recover_expert_episodes
 
 
@@ -117,6 +124,32 @@ def test_action_sft_trainer_dry_run_uses_action_contract(tmp_path: Path) -> None
     )
     source = tmp_path / "action.jsonl"
     source.write_text(json.dumps(example) + "\n", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": JANUS_ACTION_COLLECTION_SCHEMA,
+                "status": "complete",
+                "requested_episode_ids": ["1"],
+                "completed_episode_ids": ["1"],
+                "max_steps": 500,
+                "examples": 1,
+                "simulator_contract": janus_r2r_simulator_contract(),
+                "oracle_policy": janus_r2r_oracle_contract(),
+                "visual_contract": {
+                    "habitat_rgb_size": [640, 480],
+                    "stored_model_image_size": list(qwen3vl_image_size()),
+                    "storage": "jpeg",
+                    "processor_kwargs": qwen3vl_processor_kwargs(),
+                },
+                "temporal_visual_contract": {
+                    "sampling": "janus_uniform_episode_prefix",
+                    "max_frames": 9,
+                    "current_frame_last": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     output = tmp_path / "dry-run"
     completed = subprocess.run(
         [
@@ -143,3 +176,21 @@ def test_action_sft_trainer_dry_run_uses_action_contract(tmp_path: Path) -> None
         "stop_action": 1.0,
         "xml": 1.0,
     }
+
+
+def test_action_trainer_rejects_legacy_collection_manifest(tmp_path: Path) -> None:
+    example = make_action_sft_example(
+        episode_id="1",
+        step_index=0,
+        instruction="Stop here.",
+        frame_uris=("file:///tmp/frame.jpg",),
+        expert_action="STOP",
+    )
+    source = tmp_path / "action.jsonl"
+    source.write_text(json.dumps(example) + "\n", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"schema": "cfrp.qwen3vl.action_sft_manifest.v1"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="not produced"):
+        load_action_sft_jsonl(source, require_janus_contract=True)

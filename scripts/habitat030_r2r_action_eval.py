@@ -14,7 +14,11 @@ if str(ROOT) not in sys.path:
 from vlnce_server.habitat030.action_runner import ActionOnlyEpisodeRunner
 from vlnce_server.habitat030.environment import Habitat030NavigationEnvironment
 from vlnce_server.habitat030.r2r_dataset import load_r2r_dataset, make_habitat_dataset
-from vlnce_server.habitat030.r2r_environment import R2R_MAX_EPISODE_STEPS, r2r_camera_overrides
+from vlnce_server.habitat030.r2r_environment import (
+    R2R_MAX_EPISODE_STEPS,
+    R2R_SUCCESS_DISTANCE,
+    r2r_simulator_overrides,
+)
 from vlnce_server.qwen3vl import VLLMActionClient
 
 
@@ -27,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episode-count", type=int, default=200)
     parser.add_argument("--episode-offset", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=R2R_MAX_EPISODE_STEPS)
-    parser.add_argument("--success-distance", type=float, default=3.0)
+    parser.add_argument("--success-distance", type=float, default=R2R_SUCCESS_DISTANCE)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--model", default="cfrp-action")
     parser.add_argument("--output-dir", required=True)
@@ -115,7 +119,7 @@ def _make_env(args, records):
         f"habitat.task.measurements.success.success_distance={args.success_distance}",
         f"habitat.seed={args.seed}",
     ]
-    overrides.extend(r2r_camera_overrides())
+    overrides.extend(r2r_simulator_overrides())
     config = get_config(args.config, overrides=overrides)
     return habitat.Env(config=config, dataset=make_habitat_dataset(records))
 

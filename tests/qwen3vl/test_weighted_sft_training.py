@@ -2,9 +2,12 @@ from types import SimpleNamespace
 
 from scripts.preflight_qwen3vl_stage1_sft import _processor_sample
 from scripts.train_qwen3vl_stage1_sft import (
+    _ResumeState,
     _equal_train_shard,
     _fixed_validation_examples,
+    _iter_batches,
     _milestone_steps,
+    _next_resume_position,
     _optimizer_step_count,
     _require_visual_tensors,
     _split_examples_by_episode,
@@ -55,12 +58,42 @@ def test_distributed_model_is_unwrapped_for_uneven_validation_shards():
 
 
 def test_optimizer_step_count_respects_epochs_and_global_micro_step_limit():
-    args = SimpleNamespace(epochs=3, max_steps=None, gradient_accumulation=8)
+    args = SimpleNamespace(
+        epochs=3,
+        max_steps=None,
+        per_device_batch_size=1,
+        gradient_accumulation=8,
+    )
 
     assert _optimizer_step_count(2203, args) == 828
 
     args.max_steps = 10
     assert _optimizer_step_count(2203, args) == 2
+
+
+def test_optimizer_step_count_uses_real_per_device_batches():
+    args = SimpleNamespace(
+        epochs=3,
+        max_steps=None,
+        per_device_batch_size=4,
+        gradient_accumulation=2,
+    )
+
+    assert _optimizer_step_count(2203, args) == 828
+
+    args.max_steps = 10
+    assert _optimizer_step_count(2203, args) == 2
+
+
+def test_batch_iteration_and_resume_position_are_stable():
+    examples = [_example(str(index), 0) for index in range(10)]
+
+    batches = list(_iter_batches(examples, 4))
+
+    assert [len(batch) for batch in batches] == [4, 4, 2]
+    assert _next_resume_position(2, 0, len(batches)) == (2, 1)
+    assert _next_resume_position(2, 2, len(batches)) == (3, 0)
+    assert _ResumeState(epoch=2, next_batch_index=1).epoch == 2
 
 
 def test_milestones_match_formal_training_schedule():

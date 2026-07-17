@@ -17,6 +17,7 @@ import json
 import math
 import os
 import random
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--gradient-accumulation", type=int, default=8)
+    parser.add_argument("--per-device-batch-size", type=int, default=1)
+    checkpointing = parser.add_mutually_exclusive_group()
+    checkpointing.add_argument(
+        "--gradient-checkpointing",
+        dest="gradient_checkpointing",
+        action="store_true",
+    )
+    checkpointing.add_argument(
+        "--no-gradient-checkpointing",
+        dest="gradient_checkpointing",
+        action="store_false",
+    )
+    parser.set_defaults(gradient_checkpointing=True)
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument(
@@ -74,6 +88,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-count", type=int, default=0)
     parser.add_argument("--wandb-project")
     parser.add_argument("--run-name")
+    parser.add_argument("--wandb-run-id")
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        help="Training checkpoint containing adapter, optimizer, scheduler, and trainer state.",
+    )
+    parser.add_argument(
+        "--stop-file",
+        help="Gracefully save interrupt-checkpoint and exit when this path exists.",
+    )
     parser.add_argument("--max-examples", type=int)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--seed", type=int, default=123)
@@ -87,8 +110,19 @@ def main() -> int:
         args.action_loss_weight = (
             1.0 if args.contract == "action-only" else DEFAULT_ACTION_LOSS_WEIGHT
         )
-    if args.epochs < 1 or args.gradient_accumulation < 1 or args.lora_rank < 1 or args.lora_alpha < 1:
-        raise ValueError("epochs, gradient-accumulation, lora-rank, and lora-alpha must be positive")
+    if (
+        args.epochs < 1
+        or args.gradient_accumulation < 1
+        or args.per_device_batch_size < 1
+        or args.lora_rank < 1
+        or args.lora_alpha < 1
+    ):
+        raise ValueError(
+            "epochs, per-device-batch-size, gradient-accumulation, lora-rank, and lora-alpha "
+            "must be positive"
+        )
+    if args.initial_adapter is not None and args.resume_from_checkpoint is not None:
+        raise ValueError("initial-adapter and resume-from-checkpoint are mutually exclusive")
     configured_weights = [
         args.action_loss_weight,
         args.progress_loss_weight,
@@ -100,6 +134,8 @@ def main() -> int:
         raise ValueError("all Stage 1 loss weights must be positive")
     if args.initial_adapter is not None:
         _validate_initial_adapter(Path(args.initial_adapter), args)
+    if args.resume_from_checkpoint is not None:
+        _validate_training_checkpoint(Path(args.resume_from_checkpoint), args)
     if not 0 <= args.validation_fraction < 1:
         raise ValueError("validation-fraction must be in [0, 1)")
     if not 0 <= args.warmup_ratio < 1:
@@ -127,7 +163,7 @@ def main() -> int:
         args.seed,
     )
     output_dir = Path(args.output_dir)
-    if output_dir.exists():
+    if output_dir.exists() and args.resume_from_checkpoint is None:
         raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
     if args.dry_run:
         _write_run_manifest(
@@ -165,11 +201,13 @@ def main() -> int:
     )
     model.config.use_cache = False
     model.enable_input_require_grads()
-    model.gradient_checkpointing_enable()
-    if args.initial_adapter is not None:
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+    adapter_source = args.resume_from_checkpoint or args.initial_adapter
+    if adapter_source is not None:
         model = PeftModel.from_pretrained(
             model,
-            args.initial_adapter,
+            adapter_source,
             is_trainable=True,
         )
     else:
@@ -203,9 +241,22 @@ def main() -> int:
         total_steps=total_optimizer_steps,
         warmup_ratio=args.warmup_ratio,
     )
-    wandb_run = _start_wandb(args, runtime, examples, train_examples, validation_examples)
+    resume_state = _ResumeState()
+    if args.resume_from_checkpoint is not None:
+        resume_state = _load_training_checkpoint(
+            Path(args.resume_from_checkpoint), optimizer, scheduler, runtime, torch
+        )
+    stop_controller = _install_stop_handlers(args.stop_file)
+    wandb_run = _start_wandb(
+        args,
+        runtime,
+        examples,
+        train_examples,
+        validation_examples,
+        resume_state=resume_state,
+    )
     try:
-        micro_steps, optimizer_steps, validation_loss = _train(
+        result = _train(
             model,
             processor,
             optimizer,
@@ -215,9 +266,29 @@ def main() -> int:
             args,
             runtime,
             wandb_run,
+            resume_state=resume_state,
+            stop_controller=stop_controller,
             validation_steps=validation_steps,
             checkpoint_steps=checkpoint_steps,
         )
+        if result.interrupted:
+            if runtime.is_main:
+                _write_run_manifest(
+                    output_dir,
+                    args,
+                    examples,
+                    status="interrupted",
+                    optimizer_steps=result.optimizer_steps,
+                    train_examples=len(train_examples),
+                    validation_examples=len(validation_examples),
+                    validation_loss=result.validation_loss,
+                    distributed_world_size=runtime.world_size,
+                    validation_steps=validation_steps,
+                    checkpoint_steps=checkpoint_steps,
+                )
+                print(f"interrupt_checkpoint={output_dir / 'interrupt-checkpoint'}")
+                print("qwen3vl_sft_interrupted: SAVED")
+            return 0
         _save_adapter(model, processor, output_dir / "adapter", runtime)
         if runtime.is_main:
             _write_run_manifest(
@@ -225,18 +296,18 @@ def main() -> int:
                 args,
                 examples,
                 status="completed",
-                optimizer_steps=optimizer_steps,
+                optimizer_steps=result.optimizer_steps,
                 train_examples=len(train_examples),
                 validation_examples=len(validation_examples),
-                validation_loss=validation_loss,
+                validation_loss=result.validation_loss,
                 distributed_world_size=runtime.world_size,
                 validation_steps=validation_steps,
                 checkpoint_steps=checkpoint_steps,
             )
             print(f"examples={len(examples)} train={len(train_examples)} validation={len(validation_examples)}")
-            print(f"micro_steps_per_rank={micro_steps}")
-            print(f"optimizer_steps={optimizer_steps}")
-            print(f"validation_loss={validation_loss:.6f}")
+            print(f"micro_batches_per_rank={result.micro_batches}")
+            print(f"optimizer_steps={result.optimizer_steps}")
+            print(f"validation_loss={result.validation_loss:.6f}")
             print(f"output_dir={output_dir}")
             print(f"qwen3vl_{args.contract.replace('-', '_')}_sft: OK")
         return 0
@@ -261,6 +332,30 @@ def _validate_initial_adapter(path: Path, args: argparse.Namespace) -> None:
             "initial adapter LoRA config does not match requested continuation config: "
             f"adapter r/alpha={rank}/{alpha}, requested={args.lora_rank}/{args.lora_alpha}"
         )
+
+
+def _validate_training_checkpoint(path: Path, args: argparse.Namespace) -> None:
+    _validate_initial_adapter(path, args)
+    for name in ("optimizer.pt", "scheduler.pt", "trainer_state.json"):
+        if not (path / name).is_file():
+            raise FileNotFoundError(path / name)
+    state = json.loads((path / "trainer_state.json").read_text(encoding="utf-8"))
+    expected = {
+        "contract": args.contract,
+        "per_device_batch_size": args.per_device_batch_size,
+        "gradient_accumulation": args.gradient_accumulation,
+        "gradient_checkpointing": args.gradient_checkpointing,
+        "lora_rank": args.lora_rank,
+        "lora_alpha": args.lora_alpha,
+        "seed": args.seed,
+    }
+    mismatches = {
+        key: (state.get(key), value)
+        for key, value in expected.items()
+        if state.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"resume checkpoint training contract mismatch: {mismatches}")
 
 
 def _supervised_inputs(
@@ -330,6 +425,70 @@ def _supervised_inputs(
     return full.to(device), labels.to(device), token_weights.to(device)
 
 
+def _supervised_batch(
+    processor: Any,
+    examples: list[dict[str, Any]],
+    device: Any,
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], Any, Any]:
+    """Right-pad text tensors and concatenate variable-count Qwen image patches."""
+
+    if not examples:
+        raise ValueError("supervised batch must not be empty")
+    if len(examples) == 1:
+        inputs, labels, weights = _supervised_inputs(processor, examples[0], device, args)
+        return dict(inputs), labels, weights
+
+    import torch
+
+    cpu = torch.device("cpu")
+    prepared = [_supervised_inputs(processor, example, cpu, args) for example in examples]
+    input_rows = [dict(item[0]) for item in prepared]
+    labels = _pad_sequence_rows([item[1] for item in prepared], -100)
+    token_weights = _pad_sequence_rows([item[2] for item in prepared], 0.0)
+    batch: dict[str, Any] = {
+        "input_ids": _pad_sequence_rows(
+            [item["input_ids"] for item in input_rows],
+            int(processor.tokenizer.pad_token_id),
+        ),
+        "attention_mask": _pad_sequence_rows(
+            [item["attention_mask"] for item in input_rows], 0
+        ),
+    }
+    if all("mm_token_type_ids" in item for item in input_rows):
+        batch["mm_token_type_ids"] = _pad_sequence_rows(
+            [item["mm_token_type_ids"] for item in input_rows], 0
+        )
+    visual_keys = ("pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw")
+    for key in visual_keys:
+        present = [item[key] for item in input_rows if key in item]
+        if present:
+            if len(present) != len(input_rows):
+                raise RuntimeError(f"Qwen batch has inconsistent visual tensor {key}")
+            batch[key] = torch.cat(present, dim=0)
+    supported = {"input_ids", "attention_mask", "mm_token_type_ids", *visual_keys}
+    unexpected = set().union(*(set(item) for item in input_rows)) - supported
+    if unexpected:
+        raise RuntimeError(f"unsupported Qwen batch input tensors: {sorted(unexpected)}")
+    return (
+        {key: value.to(device) for key, value in batch.items()},
+        labels.to(device),
+        token_weights.to(device),
+    )
+
+
+def _pad_sequence_rows(values: list[Any], pad_value: int | float) -> Any:
+    import torch
+
+    if not values or any(value.ndim != 2 or value.shape[0] != 1 for value in values):
+        raise ValueError("sequence tensors must have shape [1, length]")
+    maximum = max(value.shape[1] for value in values)
+    output = values[0].new_full((len(values), maximum), pad_value)
+    for row, value in enumerate(values):
+        output[row, : value.shape[1]] = value[0]
+    return output
+
+
 def _require_visual_tensors(inputs: Any, source: str) -> None:
     """Fail loudly if a multimodal SFT sample was reduced to text only."""
 
@@ -370,6 +529,45 @@ class _Runtime:
     @property
     def is_main(self) -> bool:
         return self.rank == 0
+
+
+@dataclass(frozen=True)
+class _ResumeState:
+    epoch: int = 0
+    next_batch_index: int = 0
+    optimizer_steps: int = 0
+    micro_batches: int = 0
+    wandb_run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _TrainResult:
+    micro_batches: int
+    optimizer_steps: int
+    validation_loss: float
+    interrupted: bool = False
+
+
+@dataclass
+class _StopController:
+    stop_file: Path | None = None
+    signal_requested: bool = False
+
+    def requested(self) -> bool:
+        return self.signal_requested or (
+            self.stop_file is not None and self.stop_file.exists()
+        )
+
+
+def _install_stop_handlers(stop_file: str | None) -> _StopController:
+    controller = _StopController(None if stop_file is None else Path(stop_file))
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        controller.signal_requested = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    return controller
 
 
 def _initialize_runtime(torch: Any) -> _Runtime:
@@ -467,10 +665,11 @@ def _optimizer_step_count(local_examples: int, args: argparse.Namespace) -> int:
     remaining = args.max_steps
     total = 0
     for _epoch in range(args.epochs):
-        micro_steps = local_examples if remaining is None else min(local_examples, remaining)
-        total += math.ceil(micro_steps / args.gradient_accumulation)
+        selected_examples = local_examples if remaining is None else min(local_examples, remaining)
+        micro_batches = math.ceil(selected_examples / args.per_device_batch_size)
+        total += math.ceil(micro_batches / args.gradient_accumulation)
         if remaining is not None:
-            remaining -= micro_steps
+            remaining -= selected_examples
             if remaining == 0:
                 break
     return max(total, 1)
@@ -490,6 +689,27 @@ def _cosine_scheduler(optimizer: Any, *, total_steps: int, warmup_ratio: float) 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, scale)
 
 
+def _iter_batches(examples: list[dict[str, Any]], batch_size: int):
+    for start in range(0, len(examples), batch_size):
+        yield examples[start : start + batch_size]
+
+
+def _next_resume_position(epoch: int, batch_index: int, batch_count: int) -> tuple[int, int]:
+    next_batch = batch_index + 1
+    return (epoch + 1, 0) if next_batch == batch_count else (epoch, next_batch)
+
+
+def _distributed_stop_requested(controller: _StopController, runtime: _Runtime) -> bool:
+    requested = controller.requested()
+    if not runtime.distributed:
+        return requested
+    import torch
+
+    flag = torch.tensor(int(requested), device=runtime.device, dtype=torch.int32)
+    torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MAX)
+    return bool(flag.item())
+
+
 def _train(
     model: Any,
     processor: Any,
@@ -501,37 +721,50 @@ def _train(
     runtime: _Runtime,
     wandb_run: Any,
     *,
+    resume_state: _ResumeState = _ResumeState(),
+    stop_controller: _StopController | None = None,
     validation_steps: tuple[int, ...] = tuple(),
     checkpoint_steps: tuple[int, ...] = tuple(),
-) -> tuple[int, int, float]:
+) -> _TrainResult:
     optimizer.zero_grad(set_to_none=True)
     remaining_micro_steps = args.max_steps
-    total_micro_steps = 0
-    optimizer_steps = 0
+    total_micro_steps = resume_state.micro_batches
+    optimizer_steps = resume_state.optimizer_steps
     validation_loss = float("nan")
     validation_step_set = set(validation_steps)
     checkpoint_step_set = set(checkpoint_steps)
     accumulated_group_loss = None
     for epoch in range(args.epochs):
-        max_micro_steps = (
+        if epoch < resume_state.epoch:
+            continue
+        max_examples = (
             len(examples)
             if remaining_micro_steps is None
             else min(len(examples), remaining_micro_steps)
         )
-        if max_micro_steps == 0:
+        if max_examples == 0:
             break
         epoch_examples = list(examples)
         random.Random(args.seed + runtime.rank + epoch * 10_007).shuffle(epoch_examples)
-        for micro_index, example in enumerate(epoch_examples[:max_micro_steps]):
+        epoch_batches = list(
+            _iter_batches(epoch_examples[:max_examples], args.per_device_batch_size)
+        )
+        start_batch = resume_state.next_batch_index if epoch == resume_state.epoch else 0
+        if start_batch > len(epoch_batches):
+            raise ValueError("resume batch index exceeds reconstructed epoch")
+        for micro_index in range(start_batch, len(epoch_batches)):
+            example_batch = epoch_batches[micro_index]
             group_start = (micro_index // args.gradient_accumulation) * args.gradient_accumulation
-            group_end = min(group_start + args.gradient_accumulation, max_micro_steps)
+            group_end = min(group_start + args.gradient_accumulation, len(epoch_batches))
             should_step = micro_index + 1 == group_end
             divisor = group_end - group_start
             sync_context = (
                 model.no_sync() if runtime.distributed and not should_step else contextlib.nullcontext()
             )
             with sync_context:
-                inputs, labels, token_weights = _supervised_inputs(processor, example, runtime.device, args)
+                inputs, labels, token_weights = _supervised_batch(
+                    processor, example_batch, runtime.device, args
+                )
                 loss = _weighted_causal_lm_loss(model(**inputs).logits, labels, token_weights)
                 (loss / divisor).backward()
             detached_loss = loss.detach()
@@ -556,7 +789,12 @@ def _train(
                     {
                         "train/loss": mean_loss,
                         "train/learning_rate": scheduler.get_last_lr()[0],
-                        "train/epoch": epoch + (micro_index + 1) / max_micro_steps,
+                        "train/epoch": epoch + (micro_index + 1) / len(epoch_batches),
+                        "train/examples_per_optimizer_step": (
+                            args.per_device_batch_size
+                            * args.gradient_accumulation
+                            * runtime.world_size
+                        ),
                     },
                     step=optimizer_steps,
                 )
@@ -566,7 +804,25 @@ def _train(
                 else optimizer_steps % args.save_every_optimizer_steps == 0
             )
             if should_save:
-                _save_adapter(model, processor, Path(args.output_dir) / f"checkpoint-{optimizer_steps}", runtime)
+                next_epoch, next_batch = _next_resume_position(
+                    epoch, micro_index, len(epoch_batches)
+                )
+                _save_training_checkpoint(
+                    model,
+                    processor,
+                    optimizer,
+                    scheduler,
+                    Path(args.output_dir) / f"checkpoint-{optimizer_steps}",
+                    runtime,
+                    args,
+                    _ResumeState(
+                        epoch=next_epoch,
+                        next_batch_index=next_batch,
+                        optimizer_steps=optimizer_steps,
+                        micro_batches=total_micro_steps,
+                        wandb_run_id=getattr(wandb_run, "id", None),
+                    ),
+                )
             if optimizer_steps in validation_step_set:
                 validation_loss = _evaluate(
                     model, processor, validation_examples, args, runtime
@@ -575,6 +831,33 @@ def _train(
                     wandb_run.log(
                         {"validation/loss": validation_loss}, step=optimizer_steps
                     )
+            if stop_controller is not None and _distributed_stop_requested(
+                stop_controller, runtime
+            ):
+                next_epoch, next_batch = _next_resume_position(
+                    epoch, micro_index, len(epoch_batches)
+                )
+                _save_training_checkpoint(
+                    model,
+                    processor,
+                    optimizer,
+                    scheduler,
+                    Path(args.output_dir) / "interrupt-checkpoint",
+                    runtime,
+                    args,
+                    _ResumeState(
+                        epoch=next_epoch,
+                        next_batch_index=next_batch,
+                        optimizer_steps=optimizer_steps,
+                        micro_batches=total_micro_steps,
+                        wandb_run_id=getattr(wandb_run, "id", None),
+                    ),
+                )
+                if runtime.is_main and stop_controller.stop_file is not None:
+                    stop_controller.stop_file.unlink(missing_ok=True)
+                return _TrainResult(
+                    total_micro_steps, optimizer_steps, validation_loss, interrupted=True
+                )
         if not validation_step_set:
             validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
             if wandb_run is not None and validation_loss == validation_loss:
@@ -583,10 +866,10 @@ def _train(
                     step=optimizer_steps,
                 )
         if remaining_micro_steps is not None:
-            remaining_micro_steps -= max_micro_steps
+            remaining_micro_steps -= max_examples
     if validation_step_set and optimizer_steps not in validation_step_set:
         validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
-    return total_micro_steps, optimizer_steps, validation_loss
+    return _TrainResult(total_micro_steps, optimizer_steps, validation_loss)
 
 
 def _evaluate(
@@ -605,12 +888,15 @@ def _evaluate(
     loss_sum = torch.zeros((), device=runtime.device, dtype=torch.float32)
     count = torch.zeros((), device=runtime.device, dtype=torch.float32)
     with torch.no_grad():
-        for example in examples:
-            inputs, labels, token_weights = _supervised_inputs(processor, example, runtime.device, args)
-            loss_sum += _weighted_causal_lm_loss(
+        for example_batch in _iter_batches(examples, args.per_device_batch_size):
+            inputs, labels, token_weights = _supervised_batch(
+                processor, example_batch, runtime.device, args
+            )
+            batch_size = len(example_batch)
+            loss_sum += batch_size * _weighted_causal_lm_loss(
                 evaluation_model(**inputs).logits, labels, token_weights
             ).float()
-            count += 1
+            count += batch_size
     if runtime.distributed:
         torch.distributed.all_reduce(loss_sum)
         torch.distributed.all_reduce(count)
@@ -648,12 +934,93 @@ def _save_adapter(model: Any, processor: Any, path: Path, runtime: _Runtime) -> 
         imported_torch.distributed.barrier()
 
 
+def _save_training_checkpoint(
+    model: Any,
+    processor: Any,
+    optimizer: Any,
+    scheduler: Any,
+    path: Path,
+    runtime: _Runtime,
+    args: argparse.Namespace,
+    state: _ResumeState,
+) -> None:
+    """Save one adapter plus all state required for deterministic continuation."""
+
+    import torch
+
+    _save_adapter(model, processor, path, runtime)
+    rng_state = {
+        "python": random.getstate(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": (
+            torch.cuda.get_rng_state(runtime.device) if torch.cuda.is_available() else None
+        ),
+    }
+    torch.save(rng_state, path / f"rng_state_rank-{runtime.rank:02d}.pt")
+    if runtime.is_main:
+        torch.save(optimizer.state_dict(), path / "optimizer.pt")
+        torch.save(scheduler.state_dict(), path / "scheduler.pt")
+        payload = {
+            "schema": "cfrp.qwen3vl.sft_checkpoint.v1",
+            "contract": args.contract,
+            "epoch": state.epoch,
+            "next_batch_index": state.next_batch_index,
+            "optimizer_steps": state.optimizer_steps,
+            "micro_batches": state.micro_batches,
+            "wandb_run_id": state.wandb_run_id,
+            "per_device_batch_size": args.per_device_batch_size,
+            "gradient_accumulation": args.gradient_accumulation,
+            "gradient_checkpointing": args.gradient_checkpointing,
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
+            "seed": args.seed,
+        }
+        (path / "trainer_state.json").write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+    if runtime.distributed:
+        torch.distributed.barrier()
+
+
+def _load_training_checkpoint(
+    path: Path,
+    optimizer: Any,
+    scheduler: Any,
+    runtime: _Runtime,
+    torch: Any,
+) -> _ResumeState:
+    payload = json.loads((path / "trainer_state.json").read_text(encoding="utf-8"))
+    optimizer.load_state_dict(
+        torch.load(path / "optimizer.pt", map_location=runtime.device, weights_only=False)
+    )
+    scheduler.load_state_dict(
+        torch.load(path / "scheduler.pt", map_location=runtime.device, weights_only=False)
+    )
+    rng_path = path / f"rng_state_rank-{runtime.rank:02d}.pt"
+    if not rng_path.is_file():
+        raise FileNotFoundError(rng_path)
+    rng_state = torch.load(rng_path, map_location="cpu", weights_only=False)
+    random.setstate(rng_state["python"])
+    torch.set_rng_state(rng_state["torch_cpu"])
+    if torch.cuda.is_available() and rng_state.get("torch_cuda") is not None:
+        torch.cuda.set_rng_state(rng_state["torch_cuda"], runtime.device)
+    return _ResumeState(
+        epoch=int(payload["epoch"]),
+        next_batch_index=int(payload["next_batch_index"]),
+        optimizer_steps=int(payload["optimizer_steps"]),
+        micro_batches=int(payload["micro_batches"]),
+        wandb_run_id=payload.get("wandb_run_id"),
+    )
+
+
 def _start_wandb(
     args: argparse.Namespace,
     runtime: _Runtime,
     examples: list[dict[str, Any]],
     train_examples: list[dict[str, Any]],
     validation_examples: list[dict[str, Any]],
+    *,
+    resume_state: _ResumeState = _ResumeState(),
 ) -> Any:
     if not args.wandb_project or not runtime.is_main:
         return None
@@ -661,9 +1028,12 @@ def _start_wandb(
         import wandb
     except ImportError as exc:
         raise RuntimeError("--wandb-project requires wandb in the training environment") from exc
+    run_id = args.wandb_run_id or resume_state.wandb_run_id
     return wandb.init(
         project=args.wandb_project,
         name=args.run_name,
+        id=run_id,
+        resume="allow" if run_id else None,
         config={
             "conversation_windows": len(examples),
             "supervised_turns": _supervised_turn_count(examples),
@@ -680,6 +1050,14 @@ def _start_wandb(
             "progress_loss_weight": args.progress_loss_weight,
             "subgoal_loss_weight": args.subgoal_loss_weight,
             "warmup_ratio": args.warmup_ratio,
+            "per_device_batch_size": args.per_device_batch_size,
+            "gradient_accumulation": args.gradient_accumulation,
+            "global_effective_batch_size": (
+                args.per_device_batch_size
+                * args.gradient_accumulation
+                * runtime.world_size
+            ),
+            "gradient_checkpointing": args.gradient_checkpointing,
             "world_size": runtime.world_size,
         },
     )
@@ -760,6 +1138,7 @@ def _write_run_manifest(
                 "status": status,
                 "model": args.model,
                 "initial_adapter": args.initial_adapter,
+                "resume_from_checkpoint": args.resume_from_checkpoint,
                 "examples": len(examples),
                 "conversation_windows": len(examples),
                 "supervised_turns": _supervised_turn_count(examples),
@@ -774,12 +1153,21 @@ def _write_run_manifest(
                 "learning_rate": args.learning_rate,
                 "warmup_ratio": args.warmup_ratio,
                 "gradient_accumulation": args.gradient_accumulation,
+                "per_device_batch_size": args.per_device_batch_size,
+                "global_effective_batch_size": (
+                    args.per_device_batch_size
+                    * args.gradient_accumulation
+                    * distributed_world_size
+                ),
+                "gradient_checkpointing": args.gradient_checkpointing,
                 "lora_rank": args.lora_rank,
                 "lora_alpha": args.lora_alpha,
                 "loss_weights": _manifest_loss_weights(args),
                 "optimizer_steps": optimizer_steps,
                 "validation_loss": validation_loss,
                 "distributed_world_size": distributed_world_size,
+                "stop_file": args.stop_file,
+                "wandb_run_id": args.wandb_run_id,
                 "seed": args.seed,
                 "processor_kwargs": qwen3vl_processor_kwargs(),
             },

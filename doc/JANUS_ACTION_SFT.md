@@ -84,6 +84,46 @@ python scripts/train_qwen3vl_stage1_sft.py \
   --dry-run
 ```
 
+For four-GPU training, increase the real micro-batch first and reduce gradient
+accumulation by the same factor so the effective batch remains stable. For
+example, `--per-device-batch-size 4 --gradient-accumulation 2` keeps the global
+batch at 32. Disable activation checkpointing only after a GPU memory smoke:
+
+```bash
+torchrun --standalone --nproc-per-node 4 scripts/train_qwen3vl_stage1_sft.py \
+  --contract action-only \
+  --train-jsonl /path/to/action_sft.jsonl \
+  --model /path/to/Qwen3-VL-4B-Instruct \
+  --output-dir /path/to/run \
+  --per-device-batch-size 4 \
+  --gradient-accumulation 2 \
+  --no-gradient-checkpointing \
+  --stop-file /path/to/run.STOP
+```
+
+Create the configured stop file to request a synchronized stop. Every rank
+finishes the current optimizer step, then the run writes
+`interrupt-checkpoint/` with the LoRA adapter, optimizer, scheduler, trainer
+position, W&B run id, and rank-local random state. Continue with the identical
+training contract and output directory:
+
+```bash
+torchrun --standalone --nproc-per-node 4 scripts/train_qwen3vl_stage1_sft.py \
+  --contract action-only \
+  --train-jsonl /path/to/action_sft.jsonl \
+  --model /path/to/Qwen3-VL-4B-Instruct \
+  --output-dir /path/to/run \
+  --per-device-batch-size 4 \
+  --gradient-accumulation 2 \
+  --no-gradient-checkpointing \
+  --stop-file /path/to/run.STOP \
+  --resume-from-checkpoint /path/to/run/interrupt-checkpoint
+```
+
+Do not change the data split, seed, LoRA rank/alpha, micro-batch, accumulation,
+or activation-checkpointing setting when resuming. The script rejects a
+mismatched resume contract instead of silently changing optimizer semantics.
+
 The closed-loop evaluator is `scripts/habitat030_r2r_action_eval.py`. It sends
 one request, executes one parsed action, appends the new observation, and sends
 the next request. Invalid XML is recorded as an error and cannot receive SR or

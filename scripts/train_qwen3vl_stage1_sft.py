@@ -746,11 +746,7 @@ def _write_run_manifest(
             {
                 "schema": "cfrp.qwen3vl.sft_run.v2",
                 "contract": args.contract,
-                "objective": (
-                    "assistant_only_causal_cross_entropy"
-                    if args.contract == "action-only"
-                    else "action_weighted_causal_cross_entropy"
-                ),
+                "objective": _objective_name(args),
                 "status": status,
                 "model": args.model,
                 "initial_adapter": args.initial_adapter,
@@ -770,17 +766,7 @@ def _write_run_manifest(
                 "gradient_accumulation": args.gradient_accumulation,
                 "lora_rank": args.lora_rank,
                 "lora_alpha": args.lora_alpha,
-                "loss_weights": {
-                    "action": args.action_loss_weight,
-                    "stop_action": (
-                        args.action_loss_weight
-                        if args.stop_action_loss_weight is None
-                        else args.stop_action_loss_weight
-                    ),
-                    "progress": args.progress_loss_weight,
-                    "subgoal": args.subgoal_loss_weight,
-                    "xml": 1.0,
-                },
+                "loss_weights": _manifest_loss_weights(args),
                 "optimizer_steps": optimizer_steps,
                 "validation_loss": validation_loss,
                 "distributed_world_size": distributed_world_size,
@@ -792,6 +778,31 @@ def _write_run_manifest(
         + "\n",
         encoding="utf-8",
     )
+
+
+def _manifest_loss_weights(args: argparse.Namespace) -> dict[str, float]:
+    weights = {
+        "action": args.action_loss_weight,
+        "stop_action": (
+            args.action_loss_weight
+            if args.stop_action_loss_weight is None
+            else args.stop_action_loss_weight
+        ),
+        "xml": 1.0,
+    }
+    if args.contract == "stage1":
+        weights.update(
+            progress=args.progress_loss_weight,
+            subgoal=args.subgoal_loss_weight,
+        )
+    return weights
+
+
+def _objective_name(args: argparse.Namespace) -> str:
+    weights = _manifest_loss_weights(args)
+    if args.contract == "action-only" and all(value == 1.0 for value in weights.values()):
+        return "assistant_only_causal_cross_entropy"
+    return "action_weighted_causal_cross_entropy"
 
 
 if __name__ == "__main__":

@@ -138,4 +138,8 @@ def test_action_sft_trainer_dry_run_uses_action_contract(tmp_path: Path) -> None
     manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["contract"] == "action-only"
     assert manifest["objective"] == "assistant_only_causal_cross_entropy"
-    assert manifest["loss_weights"]["action"] == 1.0
+    assert manifest["loss_weights"] == {
+        "action": 1.0,
+        "stop_action": 1.0,
+        "xml": 1.0,
+    }

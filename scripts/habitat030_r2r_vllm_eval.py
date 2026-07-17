@@ -261,12 +261,15 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         model_decision_index = -1
         for environment_step_index in range(job.max_steps):
             queried_model = runner.needs_model_decision
+            raw_xml = None
             if queried_model:
                 model_decision_index += 1
             try:
-                step = runner.step_with_policy(
-                    client, turn_index=environment_step_index
-                )
+                if queried_model:
+                    raw_xml = client.generate_xml(runner.model_request())
+                    step = runner.step(raw_xml, turn_index=environment_step_index)
+                else:
+                    step = runner.step_pending(turn_index=environment_step_index)
             except CFRPProtocolError as exc:
                 end_reason = "invalid_xml_or_action"
                 steps.append(
@@ -275,6 +278,7 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                         "environment_step_index": environment_step_index,
                         "model_decision_index": model_decision_index,
                         "queried_model": queried_model,
+                        "raw_xml": raw_xml,
                         "protocol_error": str(exc),
                     }
                 )

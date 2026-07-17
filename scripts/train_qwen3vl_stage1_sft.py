@@ -511,6 +511,7 @@ def _train(
     validation_loss = float("nan")
     validation_step_set = set(validation_steps)
     checkpoint_step_set = set(checkpoint_steps)
+    accumulated_group_loss = None
     for epoch in range(args.epochs):
         max_micro_steps = (
             len(examples)
@@ -533,6 +534,12 @@ def _train(
                 inputs, labels, token_weights = _supervised_inputs(processor, example, runtime.device, args)
                 loss = _weighted_causal_lm_loss(model(**inputs).logits, labels, token_weights)
                 (loss / divisor).backward()
+            detached_loss = loss.detach()
+            accumulated_group_loss = (
+                detached_loss
+                if accumulated_group_loss is None
+                else accumulated_group_loss + detached_loss
+            )
             total_micro_steps += 1
             if not should_step:
                 continue
@@ -540,7 +547,10 @@ def _train(
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             optimizer_steps += 1
-            mean_loss = _mean_across_ranks(loss.detach(), runtime)
+            if accumulated_group_loss is None:
+                raise RuntimeError("gradient accumulation group has no recorded losses")
+            mean_loss = _mean_across_ranks(accumulated_group_loss / divisor, runtime)
+            accumulated_group_loss = None
             if wandb_run is not None:
                 wandb_run.log(
                     {

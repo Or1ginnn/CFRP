@@ -43,6 +43,8 @@ do not need to be regenerated.
 - Adaptation: LoRA on language attention projections; visual tower frozen.
 - Loss: assistant-only causal cross entropy over one `<action>` response. All
   supervised response tokens use ordinary weight 1 by default.
+- Logging: each W&B `train/loss` value is the mean over the complete gradient
+  accumulation group and all DDP ranks.
 - Split: by episode, never by individual decisions.
 - Evaluation: execute exactly one predicted primitive action, observe the next
   RGB frame, and request the next action.

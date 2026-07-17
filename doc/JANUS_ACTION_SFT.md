@@ -63,6 +63,15 @@ python scripts/convert_stage1_warmup_to_action_sft.py \
   --image-storage source
 ```
 
+Audit the resulting primitive trajectories before training:
+
+```bash
+python scripts/audit_action_sft.py \
+  --input-jsonl /path/to/action_sft/action_sft.jsonl \
+  --output-json /path/to/action_sft/audit.json \
+  --check-images
+```
+
 Run the mandatory training preflight before a GPU launch:
 
 ```bash

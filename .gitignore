@@ -152,6 +152,7 @@ eval_results/
 
 # local upstream reference copy; the root project already contains the copied base
 ActiveVLN/
+third_party/JanusVLN/
 
 # upstream CI is not suitable for the CFRP fork yet
 .github/

@@ -158,7 +158,7 @@ Stage 1 中禁止根据 risk 改动作或提前结束 episode。
 
 ---
 
-# Part II：Phase 0——基础导航与 Plan 接口
+# Part II：Phase 0——Action-only 专家模仿基线
 
 ## 4. 任务 P0.1：确定基础模型与 Benchmark
 
@@ -179,75 +179,58 @@ Base model: 当前可稳定复现的 VLM/VLA VLN baseline
 
 ---
 
-## 5. 任务 P0.2：实现 Persistent Plan
+## 5. 任务 P0.2：构造 primitive expert imitation 数据
 
-先实现 read-only plan，不实现 recovery 更新。
-
-初始 plan 来源可选：
-
-1. 离线强模型生成并缓存；
-2. 使用数据集 instruction 自动拆分；
-3. 使用旧版 planner 生成。
-
-第一版要求：
+保留每条完整 expert episode，但按每个 primitive decision 生成独立 SFT 样本。
+视觉采样复用 JanusVLN 的规则：早期使用全部帧，超过 9 帧后从 episode 起点到
+current frame 均匀采样 9 帧，current frame 必须位于最后。
 
 ```text
-每个 episode 初始化一次 plan
-每一步将 compact plan 输入模型
-Stage 1 中 controller 可根据 progress=advance 执行 current -> done、next todo -> current
-模型不输出 plan_update
+input: instruction + <=9 ordered RGB observations + allowed actions
+target: exactly one primitive expert action
+no plan/progress/subgoal/tool/action queue
 ```
 
 验收：
 
-- plan XML 可稳定解析；
-- 所有 episode 恰有一个 current point；
-- 输入长度在固定预算内；
-- plan 加入后 baseline 导航性能没有不可接受下降。
+- 每个 action 与执行前的 current frame 严格对齐；
+- 每条完成 episode 的最后一个 expert action 为 STOP；
+- 训练/评测视觉契约完全一致；
+- 按 episode 切分 train/validation，禁止 step 泄漏。
 
 ---
 
-## 6. 任务 P0.3：定义 Stage 1 正常输出
+## 6. 任务 P0.3：定义 Phase 0 动作输出
 
-第一阶段 assistant 输出格式：
+Phase 0 assistant 输出格式：
 
 ```xml
-<progress>hold</progress>
-<subgoal>short local navigation instruction</subgoal>
-<action>ONE_TO_THREE_COMMA_SEPARATED_ALLOWED_ACTIONS</action>
+<action>ONE_ALLOWED_PRIMITIVE_ACTION</action>
 ```
-
-`progress` 只能为 `hold/advance`。它只推进正常 plan cursor，不允许重写、放弃或
-插入计划点，因此不属于 recovery tool。
 
 禁止：
 
 ```text
 <tool>
+<plan>
 <plan_update>
+<progress>
+<subgoal>
 <risk>language token</risk>
 free-form reasoning
-more than three actions
+more than one action
 ```
 
-`<action>` 始终只出现一次，其 payload 可以包含 1--3 个按执行顺序
-排列的 primitive actions；`STOP` 必须单独出现。该序列是短时域动作预测，
-不是不可打断的开环承诺。Controller 将未执行动作维护为 active queue：每执行
-一个 primitive 就保存新观测和真实动作历史，并异步请求刷新；推理期间最多继续
-执行一个旧队列动作，新响应到达后覆盖尚未执行的尾部。若推理期间执行的动作与
-新预测前缀一致，先消去已经发生的前缀，禁止重复执行。
-
-模型输入中的 action history 只能包含已经真实执行的动作。旧队列中尚未执行、
-被覆盖或被丢弃的动作不得进入 prompt，也不得作为历史 assistant action 泄漏给
-下一轮。完整 drain 一个 chunk 的行为只保留为评测消融。Risk 只能由 MLP head
-返回。
+`<action>` 始终只出现一次且只包含一个 primitive action。Controller 执行该动作、
+获取新观测并重新请求模型。Persistent plan 和 CFRP tool 格式在进入后续阶段前以
+少量 format warm-up 引入，不在 Phase 0 导航损失中混入人为 plan 语义。
 
 验收：
 
 - XML 有效率 ≥ 99%；
 - action 合法率 ≥ 99.5%；
-- progress 合法率 ≥ 99.5%；
-- STOP 不会作为 tool；
+- 每次响应只含一个 action；
+- STOP 只来自 expert target 或模型预测，不使用 oracle distance 作为输入；
 - 输出不包含自由形式 CoT。
 
 ---

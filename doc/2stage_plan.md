@@ -228,46 +228,40 @@ Plan = editable recovery control state
 
 ## 6. 每步模型输入
 
-每一步只使用固定预算上下文，不无限累积完整对话历史。Phase 0 使用 bounded
-streaming conversation：一个窗口最多保留 8 个连续 user/assistant 导航 turn；窗口
-边界刷新慢视觉记忆，窗口内部每轮只追加当前观测。
+每一步只使用固定预算上下文，不无限累积完整对话历史。Phase 0 先采用
+JanusVLN-style expert imitation：每个 primitive expert decision 是一个独立样本；
+从 episode 起点到当前时刻最多均匀采样 9 帧，并保证 current observation 在最后。
+该最小动作基线通过后，Stage 1/2 再加入 compact plan、动作历史和 bounded loop。
 
 ```text
 Full instruction
-Eight slow-memory route anchors at a window boundary
-One new high-resolution current observation per turn
-Recent action history (K actions)
-Current compact plan
+At most nine uniformly sampled observations from the episode prefix
+Current high-resolution observation in the last image position
 Allowed primitive actions
-<MONITOR> token
 ```
 
 形式化表示：
 
 \[
-x_t=(I,P_t,O_{t-K:t},A_{t-K:t-1},\mathcal A_t)
+x_t=(I,O_{s_1:s_9=t},\mathcal A_t)
 \]
 
 其中：
 
 - \(I\)：完整导航指令；
-- \(P_t\)：当前 compact plan；
-- \(O_{t-K:t}\)：最近视觉历史；
-- \(A_{t-K:t-1}\)：最近动作历史；
+- \(O_{s_1:s_9=t}\)：从 episode prefix 均匀采样且以 current frame 结尾的视觉历史；
 - \(\mathcal A_t\)：当前环境允许的 primitive actions。
 
 Phase 0 固定配置：
 
 ```text
-K_visual_anchor = 8
-K_visual_current = 1
-K_action = 8
-K_dialogue_turn = 8
+K_visual_total <= 9
+current_frame_last = true
+target_actions = 1
 ```
 
-窗口首轮最多输入 8 个历史 route anchors 和 1 个 current observation；后续轮只
-追加 1 个新 current observation。该预算可在后续消融中调整，但 Phase 0 的训练与
-评测必须使用同一配置。
+Phase 0 的训练与评测必须使用同一采样规则，并且每次只执行一个预测动作后重新
+观察。Plan、progress、subgoal 和 tool 不属于该动作基线的 SFT target。
 
 ---
 
@@ -1157,14 +1151,18 @@ VLM makes semantic navigation and recovery decisions.
 
 ## 29. 完整训练流程
 
-### Phase 0：Base Navigation / Format Warm-up
+### Phase 0：Action-only Expert Imitation Bootstrap
 
 训练或加载可用 VLN baseline，确保：
 
-- primitive action 合法；
-- subgoal 输出稳定；
-- read-only plan 可被模型读取；
-- 固定预算历史输入可工作。
+- 使用 R2R 真正 primitive expert actions；
+- 每次只输出并执行一个合法 `<action>`；
+- 训练/评测均使用最多 9 帧的均匀 episode-prefix 视觉输入；
+- 在 val-unseen 上得到可重复且非退化的 SR/SPL baseline。
+
+Phase 0 不训练 plan/progress/subgoal/tool。进入 Stage 1/2 前只增加少量格式预热，
+使模型认识 compact plan 和 CFRP XML 接口；语义性的 plan/tool/recovery 决策仍由
+后续监督与反事实强化学习获得。
 
 ### Phase 1：On-policy Risk Data Collection
 

@@ -1,4 +1,4 @@
-"""Action-weighted LoRA SFT for the normal Stage 1 Qwen3-VL contract.
+"""LoRA SFT for Qwen3-VL Stage 1 or the Phase 0 action-only contract.
 
 This script trains every assistant turn in a bounded streaming conversation.
 The first episode turn also learns compact plan initialization; later turns
@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vlnce_server.qwen3vl.sft_manifest import load_stage1_sft_jsonl, local_image_path
+from vlnce_server.qwen3vl.action_sft import load_action_sft_jsonl
 from vlnce_server.qwen3vl.stage1 import DEFAULT_QWEN3_VL_MODEL
 from vlnce_server.qwen3vl.vision import prepare_qwen3vl_image, qwen3vl_processor_kwargs
 from vlnce_server.qwen3vl.loss_weights import (
@@ -40,6 +41,12 @@ from vlnce_server.qwen3vl.loss_weights import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-jsonl", required=True)
+    parser.add_argument(
+        "--contract",
+        choices=("stage1", "action-only"),
+        default="stage1",
+        help="Supervise the full Stage 1 XML or one JanusVLN-style primitive action.",
+    )
     parser.add_argument("--model", default=DEFAULT_QWEN3_VL_MODEL)
     parser.add_argument(
         "--initial-adapter",
@@ -52,7 +59,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation", type=int, default=8)
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
-    parser.add_argument("--action-loss-weight", type=float, default=DEFAULT_ACTION_LOSS_WEIGHT)
+    parser.add_argument(
+        "--action-loss-weight",
+        type=float,
+        help="Defaults to 5 for Stage 1 and ordinary weight 1 for action-only SFT.",
+    )
     parser.add_argument("--stop-action-loss-weight", type=float)
     parser.add_argument("--progress-loss-weight", type=float, default=DEFAULT_PROGRESS_LOSS_WEIGHT)
     parser.add_argument("--subgoal-loss-weight", type=float, default=DEFAULT_SUBGOAL_LOSS_WEIGHT)
@@ -72,6 +83,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.action_loss_weight is None:
+        args.action_loss_weight = (
+            1.0 if args.contract == "action-only" else DEFAULT_ACTION_LOSS_WEIGHT
+        )
     if args.epochs < 1 or args.gradient_accumulation < 1 or args.lora_rank < 1 or args.lora_alpha < 1:
         raise ValueError("epochs, gradient-accumulation, lora-rank, and lora-alpha must be positive")
     configured_weights = [
@@ -95,7 +110,8 @@ def main() -> int:
         raise ValueError("validation-runs and checkpoint-count must not be negative")
     if args.validation_max_examples is not None and args.validation_max_examples < 1:
         raise ValueError("validation-max-examples must be positive")
-    examples = load_stage1_sft_jsonl(args.train_jsonl)
+    loader = load_action_sft_jsonl if args.contract == "action-only" else load_stage1_sft_jsonl
+    examples = loader(args.train_jsonl)
     if args.max_examples is not None:
         examples = examples[: args.max_examples]
     if not examples:
@@ -123,7 +139,7 @@ def main() -> int:
             validation_examples=len(validation_examples),
         )
         print(f"examples={len(examples)} train={len(train_examples)} validation={len(validation_examples)}")
-        print("qwen3vl_stage1_sft_dry_run: OK")
+        print(f"qwen3vl_{args.contract.replace('-', '_')}_sft_dry_run: OK")
         return 0
 
     try:
@@ -222,7 +238,7 @@ def main() -> int:
             print(f"optimizer_steps={optimizer_steps}")
             print(f"validation_loss={validation_loss:.6f}")
             print(f"output_dir={output_dir}")
-            print("qwen3vl_stage1_sft: OK")
+            print(f"qwen3vl_{args.contract.replace('-', '_')}_sft: OK")
         return 0
     finally:
         if wandb_run is not None:
@@ -728,8 +744,13 @@ def _write_run_manifest(
     (output_dir / "run_manifest.json").write_text(
         json.dumps(
             {
-                "schema": "cfrp.qwen3vl.stage1_sft_run.v1",
-                "objective": "action_weighted_causal_cross_entropy",
+                "schema": "cfrp.qwen3vl.sft_run.v2",
+                "contract": args.contract,
+                "objective": (
+                    "assistant_only_causal_cross_entropy"
+                    if args.contract == "action-only"
+                    else "action_weighted_causal_cross_entropy"
+                ),
                 "status": status,
                 "model": args.model,
                 "initial_adapter": args.initial_adapter,

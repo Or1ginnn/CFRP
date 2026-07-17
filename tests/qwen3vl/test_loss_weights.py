@@ -47,3 +47,27 @@ def test_target_weights_reject_non_positive_values():
         assert "positive" in str(exc)
     else:
         raise AssertionError("expected positive-weight validation")
+
+
+def test_stop_action_can_receive_a_distinct_expert_terminal_weight():
+    stop_target = "<progress>hold</progress><subgoal>stop here</subgoal><action>STOP</action>"
+
+    weights = target_xml_region_weights(
+        stop_target,
+        _char_offsets(stop_target),
+        action_weight=5.0,
+        stop_action_weight=15.0,
+    )
+
+    assert weights[stop_target.index("STOP")] == 15.0
+
+
+def test_stop_weight_does_not_change_non_stop_actions():
+    weights = target_xml_region_weights(
+        TARGET,
+        _char_offsets(TARGET),
+        action_weight=5.0,
+        stop_action_weight=15.0,
+    )
+
+    assert weights[TARGET.index("MOVE_FORWARD")] == 5.0

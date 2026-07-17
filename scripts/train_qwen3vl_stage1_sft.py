@@ -41,6 +41,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-jsonl", required=True)
     parser.add_argument("--model", default=DEFAULT_QWEN3_VL_MODEL)
+    parser.add_argument(
+        "--initial-adapter",
+        help="Optional LoRA adapter whose trainable weights initialize this continuation run",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -49,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-rank", type=int, default=32)
     parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument("--action-loss-weight", type=float, default=DEFAULT_ACTION_LOSS_WEIGHT)
+    parser.add_argument("--stop-action-loss-weight", type=float)
     parser.add_argument("--progress-loss-weight", type=float, default=DEFAULT_PROGRESS_LOSS_WEIGHT)
     parser.add_argument("--subgoal-loss-weight", type=float, default=DEFAULT_SUBGOAL_LOSS_WEIGHT)
     parser.add_argument("--validation-fraction", type=float, default=0.02)
@@ -69,8 +74,17 @@ def main() -> int:
     args = parse_args()
     if args.epochs < 1 or args.gradient_accumulation < 1 or args.lora_rank < 1 or args.lora_alpha < 1:
         raise ValueError("epochs, gradient-accumulation, lora-rank, and lora-alpha must be positive")
-    if min(args.action_loss_weight, args.progress_loss_weight, args.subgoal_loss_weight) <= 0:
+    configured_weights = [
+        args.action_loss_weight,
+        args.progress_loss_weight,
+        args.subgoal_loss_weight,
+    ]
+    if args.stop_action_loss_weight is not None:
+        configured_weights.append(args.stop_action_loss_weight)
+    if min(configured_weights) <= 0:
         raise ValueError("all Stage 1 loss weights must be positive")
+    if args.initial_adapter is not None:
+        _validate_initial_adapter(Path(args.initial_adapter), args)
     if not 0 <= args.validation_fraction < 1:
         raise ValueError("validation-fraction must be in [0, 1)")
     if not 0 <= args.warmup_ratio < 1:
@@ -114,7 +128,7 @@ def main() -> int:
 
     try:
         import torch
-        from peft import LoraConfig, get_peft_model
+        from peft import LoraConfig, PeftModel, get_peft_model
         from transformers import AutoModelForImageTextToText, AutoProcessor
     except ImportError as exc:
         raise RuntimeError(
@@ -136,17 +150,24 @@ def main() -> int:
     model.config.use_cache = False
     model.enable_input_require_grads()
     model.gradient_checkpointing_enable()
-    model = get_peft_model(
-        model,
-        LoraConfig(
-            r=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=0.05,
-            bias="none",
-            target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
-            task_type="CAUSAL_LM",
-        ),
-    )
+    if args.initial_adapter is not None:
+        model = PeftModel.from_pretrained(
+            model,
+            args.initial_adapter,
+            is_trainable=True,
+        )
+    else:
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=0.05,
+                bias="none",
+                target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+                task_type="CAUSAL_LM",
+            ),
+        )
     if runtime.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
@@ -209,6 +230,23 @@ def main() -> int:
         _shutdown_runtime(runtime, torch)
 
 
+def _validate_initial_adapter(path: Path, args: argparse.Namespace) -> None:
+    config_path = path / "adapter_config.json"
+    weights_path = path / "adapter_model.safetensors"
+    if not config_path.is_file():
+        raise FileNotFoundError(config_path)
+    if not weights_path.is_file():
+        raise FileNotFoundError(weights_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    rank = int(config.get("r", 0))
+    alpha = int(config.get("lora_alpha", 0))
+    if rank != args.lora_rank or alpha != args.lora_alpha:
+        raise ValueError(
+            "initial adapter LoRA config does not match requested continuation config: "
+            f"adapter r/alpha={rank}/{alpha}, requested={args.lora_rank}/{args.lora_alpha}"
+        )
+
+
 def _supervised_inputs(
     processor: Any, example: dict[str, Any], device: Any, args: argparse.Namespace
 ) -> tuple[Any, Any, Any]:
@@ -263,6 +301,7 @@ def _supervised_inputs(
             target_suffix,
             processor.tokenizer,
             action_weight=args.action_loss_weight,
+            stop_action_weight=args.stop_action_loss_weight,
             progress_weight=args.progress_loss_weight,
             subgoal_weight=args.subgoal_loss_weight,
         )
@@ -609,7 +648,9 @@ def _start_wandb(
             "checkpoint_count": args.checkpoint_count,
             "lora_rank": args.lora_rank,
             "lora_alpha": args.lora_alpha,
+            "initial_adapter": args.initial_adapter,
             "action_loss_weight": args.action_loss_weight,
+            "stop_action_loss_weight": args.stop_action_loss_weight,
             "progress_loss_weight": args.progress_loss_weight,
             "subgoal_loss_weight": args.subgoal_loss_weight,
             "warmup_ratio": args.warmup_ratio,
@@ -691,6 +732,7 @@ def _write_run_manifest(
                 "objective": "action_weighted_causal_cross_entropy",
                 "status": status,
                 "model": args.model,
+                "initial_adapter": args.initial_adapter,
                 "examples": len(examples),
                 "conversation_windows": len(examples),
                 "supervised_turns": _supervised_turn_count(examples),
@@ -709,6 +751,11 @@ def _write_run_manifest(
                 "lora_alpha": args.lora_alpha,
                 "loss_weights": {
                     "action": args.action_loss_weight,
+                    "stop_action": (
+                        args.action_loss_weight
+                        if args.stop_action_loss_weight is None
+                        else args.stop_action_loss_weight
+                    ),
                     "progress": args.progress_loss_weight,
                     "subgoal": args.subgoal_loss_weight,
                     "xml": 1.0,

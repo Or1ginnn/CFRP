@@ -17,6 +17,7 @@ def target_xml_region_weights(
     offsets: Sequence[tuple[int, int]],
     *,
     action_weight: float = DEFAULT_ACTION_LOSS_WEIGHT,
+    stop_action_weight: float | None = None,
     progress_weight: float = DEFAULT_PROGRESS_LOSS_WEIGHT,
     subgoal_weight: float = DEFAULT_SUBGOAL_LOSS_WEIGHT,
     xml_weight: float = DEFAULT_XML_LOSS_WEIGHT,
@@ -28,8 +29,17 @@ def target_xml_region_weights(
     subgoal remains useful context but cannot dominate the navigation signal.
     """
 
-    _validate_weights(action_weight, progress_weight, subgoal_weight, xml_weight)
-    regions = _payload_regions(target_xml, action_weight, progress_weight, subgoal_weight)
+    effective_stop_weight = action_weight if stop_action_weight is None else stop_action_weight
+    _validate_weights(
+        action_weight, effective_stop_weight, progress_weight, subgoal_weight, xml_weight
+    )
+    regions = _payload_regions(
+        target_xml,
+        action_weight,
+        effective_stop_weight,
+        progress_weight,
+        subgoal_weight,
+    )
     weights: list[float] = []
     for start, end in offsets:
         weight = xml_weight
@@ -48,6 +58,7 @@ def locate_target_token_weights(
     tokenizer: Callable[..., object],
     *,
     action_weight: float = DEFAULT_ACTION_LOSS_WEIGHT,
+    stop_action_weight: float | None = None,
     progress_weight: float = DEFAULT_PROGRESS_LOSS_WEIGHT,
     subgoal_weight: float = DEFAULT_SUBGOAL_LOSS_WEIGHT,
     xml_weight: float = DEFAULT_XML_LOSS_WEIGHT,
@@ -75,6 +86,7 @@ def locate_target_token_weights(
             target_xml,
             offsets,
             action_weight=action_weight,
+            stop_action_weight=stop_action_weight,
             progress_weight=progress_weight,
             subgoal_weight=subgoal_weight,
             xml_weight=xml_weight,
@@ -82,15 +94,23 @@ def locate_target_token_weights(
     )
 
 
-def _payload_regions(target_xml: str, action_weight: float, progress_weight: float, subgoal_weight: float) -> list[tuple[int, int, float]]:
+def _payload_regions(
+    target_xml: str,
+    action_weight: float,
+    stop_action_weight: float,
+    progress_weight: float,
+    subgoal_weight: float,
+) -> list[tuple[int, int, float]]:
     regions: list[tuple[int, int, float]] = []
     for tag, weight in (
         ("progress", progress_weight),
         ("subgoal", subgoal_weight),
-        ("action", action_weight),
     ):
         for match in re.finditer(rf"<{tag}>(.*?)</{tag}>", target_xml, flags=re.DOTALL):
             regions.append((match.start(1), match.end(1), weight))
+    for match in re.finditer(r"<action>(.*?)</action>", target_xml, flags=re.DOTALL):
+        weight = stop_action_weight if match.group(1).strip() == "STOP" else action_weight
+        regions.append((match.start(1), match.end(1), weight))
     return regions
 
 

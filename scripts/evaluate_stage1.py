@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-visual-history", type=int, default=9)
     parser.add_argument("--max-action-history", type=int, default=8)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--max-new-tokens", type=int, default=1000)
     parser.add_argument("--response-timeout", type=float, default=600.0)
     parser.add_argument("--success-distance", type=float, default=3.0)
     parser.add_argument("--seed", type=int, default=123)

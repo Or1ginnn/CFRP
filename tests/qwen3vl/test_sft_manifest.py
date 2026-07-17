@@ -217,4 +217,10 @@ def test_sft_dry_run_executes_main_and_writes_manifest(tmp_path: Path):
     payload = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert payload["status"] == "dry_run"
     assert payload["examples"] == 1
-    assert payload["loss_weights"] == {"action": 5.0, "progress": 2.0, "subgoal": 0.25, "xml": 1.0}
+    assert payload["loss_weights"] == {
+        "action": 5.0,
+        "stop_action": 5.0,
+        "progress": 2.0,
+        "subgoal": 0.25,
+        "xml": 1.0,
+    }

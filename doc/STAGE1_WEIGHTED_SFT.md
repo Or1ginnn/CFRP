@@ -71,10 +71,23 @@ The full R2R run uses two epochs, ten evenly spaced validations over one fixed
 derived from the actual DDP optimizer-step count instead of being hard-coded,
 and the final optimizer step is always both validated and checkpointed.
 
-Evaluation keeps one bounded conversation per episode. It appends the latest
-observation and previous assistant response for eight turns, then opens a new
-window from the controller-owned plan and refreshed 8+1 context. vLLM prefix
-caching is enabled explicitly; correctness does not depend on a cache hit.
+Evaluation treats each one-to-three-action target as a short-horizon proposal,
+not an uninterruptible open-loop command. The controller stores its unexecuted
+suffix in a replaceable active queue. After every executed primitive it submits
+a refreshed factual-state request; at most one old queued primitive may execute
+while that request is in flight. A completed response replaces the remaining
+suffix, and a matching action prefix that already executed is reconciled rather
+than replayed.
+
+Rolling requests retain the bounded multi-turn conversation, but rewrite the
+previous assistant `<action>` payload to the subset that actually executed
+before submitting the next request. The new user turn carries the refreshed
+observation, controller-owned plan, and bounded executed-action history; queued
+or overwritten actions never become model-visible history. At a window reset,
+the request is rebuilt from the refreshed 8+1 context. The old
+drain-the-whole-chunk runtime remains available only as an ablation. vLLM
+prefix caching is enabled explicitly; correctness does not depend on a cache
+hit.
 
 Recovery tools are deliberately absent here. Valid `continue/replan` labels
 require model-error states and counterfactual evidence, so they remain in the

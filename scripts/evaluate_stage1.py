@@ -87,6 +87,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-video", action="store_true")
     parser.add_argument("--save-frames", action="store_true")
     parser.add_argument("--save-oracle-trace", action="store_true")
+    parser.add_argument(
+        "--action-queue-mode",
+        choices=("rolling", "drain"),
+        default="rolling",
+        help="Refresh pending action tails online or execute each chunk to completion.",
+    )
+    parser.add_argument(
+        "--max-actions-during-inference",
+        type=int,
+        default=1,
+        help="Maximum old queued actions committed while a rolling request is in flight.",
+    )
     parser.add_argument("--health-timeout", type=float, default=300.0)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -143,6 +155,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Stage 1 evaluation requires the fixed 8+1 visual contract (9 frames)")
     if not 0 < args.gpu_memory_utilization <= 1:
         raise ValueError("gpu-memory-utilization must be in (0, 1]")
+    if args.max_actions_during_inference < 0:
+        raise ValueError("max-actions-during-inference must not be negative")
     for path in (args.adapter, args.model, args.dataset_root, args.scenes_dir):
         if not Path(path).exists():
             raise FileNotFoundError(path)
@@ -223,7 +237,7 @@ def _write_launch_manifest(
             "\n".join(shard) + "\n", encoding="utf-8"
         )
     payload = {
-        "schema": "cfrp.stage1.evaluation.v1",
+        "schema": "cfrp.stage1.evaluation.v2",
         "model": str(Path(args.model).resolve()),
         "adapter": str(Path(args.adapter).resolve()),
         "dataset_root": str(Path(args.dataset_root).resolve()),
@@ -242,6 +256,8 @@ def _write_launch_manifest(
         "save_video": args.save_video,
         "save_frames": args.save_frames,
         "save_oracle_trace": args.save_oracle_trace,
+        "action_queue_mode": args.action_queue_mode,
+        "max_actions_during_inference": args.max_actions_during_inference,
         "max_lora_rank": args.max_lora_rank,
         "max_model_len": args.max_model_len,
         "max_num_seqs": args.max_num_seqs,
@@ -412,6 +428,10 @@ def _start_evaluators(
                 str(args.success_distance),
                 "--seed",
                 str(args.seed),
+                "--action-queue-mode",
+                args.action_queue_mode,
+                "--max-actions-during-inference",
+                str(args.max_actions_during_inference),
             ]
             if args.save_video:
                 command.append("--save-video")

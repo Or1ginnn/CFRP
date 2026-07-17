@@ -14,7 +14,12 @@ from .records import (
     NavigationStep,
     PrivilegedNavigationState,
 )
-from .stage1_runner import FixedHistoryBuffer, Stage1EpisodeRunner, Stage1TrajectoryStep
+from .stage1_runner import (
+    FixedHistoryBuffer,
+    Stage1EpisodeRunner,
+    Stage1QueueReplacement,
+    Stage1TrajectoryStep,
+)
 from .temporal_history import (
     DEFAULT_HISTORY_ANCHOR_COUNT,
     DEFAULT_MODEL_VISUAL_FRAME_COUNT,
@@ -45,6 +50,7 @@ __all__ = [
     "R2REpisodeRecord",
     "R2RSceneNotFoundError",
     "Stage1EpisodeRunner",
+    "Stage1QueueReplacement",
     "Stage1TrajectoryStep",
     "SlowFastVisualHistory",
     "cfrp_action_from_habitat_oracle",

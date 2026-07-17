@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from io import BytesIO
 from typing import Any, Dict, List
 from urllib.error import HTTPError, URLError
@@ -52,9 +53,40 @@ class VLLMStage1Client:
             self._messages = make_openai_messages(stage1_request)
         else:
             self._messages.append(make_openai_streaming_user_message(stage1_request))
+        output = self._complete(self._messages)
+        self._messages.append({"role": "assistant", "content": output})
+        self._turn_count += 1
+        return output
+
+    def retain_last_assistant_executed_actions(
+        self, executed_actions: tuple[str, ...]
+    ) -> None:
+        """Rewrite the previous assistant chunk to actions that actually executed."""
+
+        if not executed_actions:
+            raise ValueError("at least one executed action is required")
+        for message in reversed(self._messages):
+            if message.get("role") != "assistant":
+                continue
+            content = str(message.get("content", ""))
+            replacement = "<action>{}</action>".format(", ".join(executed_actions))
+            rewritten, count = re.subn(
+                r"<action>.*?</action>",
+                replacement,
+                content,
+                count=1,
+                flags=re.DOTALL,
+            )
+            if count != 1:
+                raise VLLMRequestError("previous assistant output lacks one <action> tag")
+            message["content"] = rewritten
+            return
+        raise VLLMRequestError("no previous assistant output is available to reconcile")
+
+    def _complete(self, messages: List[Dict[str, Any]]) -> str:
         payload = {
             "model": self.model,
-            "messages": self._messages,
+            "messages": messages,
             "temperature": 0.0,
             "top_p": 1.0,
             "max_tokens": self.max_new_tokens,
@@ -79,8 +111,6 @@ class VLLMStage1Client:
             output = str(body["choices"][0]["message"]["content"]).strip()
         except (KeyError, IndexError, TypeError) as exc:
             raise VLLMRequestError("vLLM response lacks choices[0].message.content: {}".format(body)) from exc
-        self._messages.append({"role": "assistant", "content": output})
-        self._turn_count += 1
         return output
 
     def reset(self) -> None:

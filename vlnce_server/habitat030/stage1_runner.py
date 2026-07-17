@@ -142,6 +142,16 @@ class Stage1TrajectoryStep:
     chunk_size: int = 1
 
 
+@dataclass(frozen=True)
+class Stage1QueueReplacement:
+    """Describe one model response replacing the unexecuted action suffix."""
+
+    replaced_actions: Tuple[str, ...]
+    model_actions: Tuple[str, ...]
+    accepted_actions: Tuple[str, ...]
+    reconciled_prefix: Tuple[str, ...]
+
+
 class Stage1EpisodeRunner:
     """Run scripted Stage 1 CFRP XML outputs through a navigation wrapper."""
 
@@ -179,6 +189,49 @@ class Stage1EpisodeRunner:
     def needs_model_decision(self) -> bool:
         return not self._pending_actions
 
+    @property
+    def pending_actions(self) -> Tuple[str, ...]:
+        """Return the unexecuted controller queue; it is never model-visible history."""
+
+        return self._pending_actions
+
+    def replace_pending_actions(
+        self,
+        raw_xml: str,
+        *,
+        executed_since_request: Tuple[str, ...] = tuple(),
+    ) -> Stage1QueueReplacement:
+        """Replace the unexecuted queue with a newly completed model response.
+
+        ``executed_since_request`` contains only actions that actually ran while
+        the response was in flight.  If those actions are also an exact prefix
+        of the new prediction, that prefix has already happened and is removed
+        from the replacement queue.
+        """
+
+        if self.initial_observation is None:
+            self.reset()
+        output = parse_cfrp_output(raw_xml)
+        controller_result = self.controller.step(output)
+        model_actions = controller_result.actions
+        reconciled_count = 0
+        for executed, predicted in zip(executed_since_request, model_actions):
+            if executed != predicted:
+                break
+            reconciled_count += 1
+        reconciled_prefix = model_actions[:reconciled_count]
+        accepted_actions = model_actions[reconciled_count:]
+        replacement = Stage1QueueReplacement(
+            replaced_actions=self._pending_actions,
+            model_actions=model_actions,
+            accepted_actions=accepted_actions,
+            reconciled_prefix=reconciled_prefix,
+        )
+        self._pending_actions = accepted_actions
+        self._pending_output = controller_result if accepted_actions else None
+        self._pending_raw_xml = output.raw_xml if accepted_actions else ""
+        return replacement
+
     def step(self, raw_xml: str, turn_index: Optional[int] = None) -> Stage1TrajectoryStep:
         """Start an action chunk, then execute its first primitive action."""
 
@@ -186,12 +239,7 @@ class Stage1EpisodeRunner:
             self.reset()
         if not self.needs_model_decision:
             raise RuntimeError("cannot start a new action chunk while actions remain pending")
-
-        output = parse_cfrp_output(raw_xml)
-        controller_result = self.controller.step(output)
-        self._pending_actions = controller_result.actions
-        self._pending_output = controller_result
-        self._pending_raw_xml = output.raw_xml
+        self.replace_pending_actions(raw_xml)
         return self.step_pending(turn_index=turn_index)
 
     def step_pending(self, turn_index: Optional[int] = None) -> Stage1TrajectoryStep:

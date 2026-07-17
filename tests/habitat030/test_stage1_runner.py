@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Event
 
 import pytest
 
+from scripts.habitat030_r2r_vllm_eval import _RollingQueueRuntime
 from vlnce_server.cfrp import CFRPProtocolError, PlanPoint, PlanState
 from vlnce_server.habitat030.records import NavigationMetrics, NavigationObservation, NavigationStep
 from vlnce_server.habitat030.stage1_runner import FixedHistoryBuffer, Stage1EpisodeRunner
@@ -183,6 +185,108 @@ def test_policy_step_budget_counts_executed_primitives_not_model_requests():
 
     assert [step.action for step in trajectory] == ["MOVE_FORWARD", "TURN_LEFT"]
     assert len(policy.requests) == 1
+
+
+def test_rolling_response_replaces_only_unexecuted_actions_and_history_stays_factual():
+    runner = Stage1EpisodeRunner(FakeWrapper(), plan())
+    runner.reset()
+    first = runner.step(
+        "<progress>hold</progress><subgoal>first chunk</subgoal>"
+        "<action>MOVE_FORWARD, TURN_LEFT, MOVE_FORWARD</action>"
+    )
+
+    request = runner.model_request()
+    assert first.action == "MOVE_FORWARD"
+    assert runner.pending_actions == ("TURN_LEFT", "MOVE_FORWARD")
+    assert request.action_history == ("MOVE_FORWARD",)
+    assert "TURN_LEFT" not in request.action_history
+
+    runner.step_pending()
+    replacement = runner.replace_pending_actions(
+        "<progress>hold</progress><subgoal>refreshed chunk</subgoal>"
+        "<action>TURN_LEFT, TURN_RIGHT</action>",
+        executed_since_request=("TURN_LEFT",),
+    )
+
+    assert replacement.replaced_actions == ("MOVE_FORWARD",)
+    assert replacement.model_actions == ("TURN_LEFT", "TURN_RIGHT")
+    assert replacement.reconciled_prefix == ("TURN_LEFT",)
+    assert replacement.accepted_actions == ("TURN_RIGHT",)
+    assert runner.pending_actions == ("TURN_RIGHT",)
+    assert runner.history.action_history == ("MOVE_FORWARD", "TURN_LEFT")
+
+
+def test_rolling_response_keeps_nonmatching_first_action_as_current_correction():
+    runner = Stage1EpisodeRunner(FakeWrapper(), plan())
+    runner.reset()
+    runner.step(
+        "<progress>hold</progress><subgoal>first chunk</subgoal>"
+        "<action>MOVE_FORWARD, MOVE_FORWARD</action>"
+    )
+    runner.step_pending()
+
+    replacement = runner.replace_pending_actions(
+        stage1_xml("hold", "TURN_RIGHT"),
+        executed_since_request=("MOVE_FORWARD",),
+    )
+
+    assert replacement.reconciled_prefix == tuple()
+    assert replacement.accepted_actions == ("TURN_RIGHT",)
+    assert runner.pending_actions == ("TURN_RIGHT",)
+
+
+def test_rolling_runtime_executes_one_old_action_then_overwrites_the_tail():
+    release_second = Event()
+
+    class DelayedPolicy:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.reconciled_histories = []
+
+        def retain_last_assistant_executed_actions(self, actions):
+            self.reconciled_histories.append(actions)
+
+        def generate_xml(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    "<progress>hold</progress><subgoal>initial</subgoal>"
+                    "<action>MOVE_FORWARD, TURN_LEFT, MOVE_FORWARD</action>"
+                )
+            release_second.wait(timeout=2)
+            return (
+                "<progress>hold</progress><subgoal>refresh</subgoal>"
+                "<action>TURN_LEFT, TURN_RIGHT</action>"
+            )
+
+    runner = Stage1EpisodeRunner(FakeWrapper(), plan())
+    runner.reset()
+    runtime = _RollingQueueRuntime(DelayedPolicy(), runner, max_actions_during_inference=1)
+    try:
+        first_response, accepted = runtime.prepare_next_action(0)
+        assert accepted is True
+        first = runner.step_pending()
+        runtime.after_action(first.action, 1, submit_next=True)
+
+        active_response, accepted = runtime.prepare_next_action(1)
+        assert accepted is False
+        assert active_response == first_response
+        second = runner.step_pending()
+        runtime.after_action(second.action, 2, submit_next=True)
+
+        release_second.set()
+        refreshed, accepted = runtime.prepare_next_action(2)
+        assert accepted is True
+        assert refreshed.response_lag_steps == 1
+        assert refreshed.replaced_actions == ("MOVE_FORWARD",)
+        assert refreshed.reconciled_prefix == ("TURN_LEFT",)
+        assert runner.pending_actions == ("TURN_RIGHT",)
+        assert runner.history.action_history == ("MOVE_FORWARD", "TURN_LEFT")
+        assert runtime.client.calls == 2
+        assert runtime.client.reconciled_histories == [("MOVE_FORWARD",)]
+    finally:
+        release_second.set()
+        runtime.close()
 
 
 def test_model_request_uses_observation_actions_when_wrapper_does_not_expose_them():

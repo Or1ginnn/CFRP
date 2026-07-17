@@ -231,8 +231,16 @@ more than three actions
 ```
 
 `<action>` 始终只出现一次，其 payload 可以包含 1--3 个按执行顺序
-排列的 primitive actions。Controller 在请求下一轮模型输出前执行完该 action
-chunk；`STOP` 必须单独出现。Risk 只能由 MLP head 返回。
+排列的 primitive actions；`STOP` 必须单独出现。该序列是短时域动作预测，
+不是不可打断的开环承诺。Controller 将未执行动作维护为 active queue：每执行
+一个 primitive 就保存新观测和真实动作历史，并异步请求刷新；推理期间最多继续
+执行一个旧队列动作，新响应到达后覆盖尚未执行的尾部。若推理期间执行的动作与
+新预测前缀一致，先消去已经发生的前缀，禁止重复执行。
+
+模型输入中的 action history 只能包含已经真实执行的动作。旧队列中尚未执行、
+被覆盖或被丢弃的动作不得进入 prompt，也不得作为历史 assistant action 泄漏给
+下一轮。完整 drain 一个 chunk 的行为只保留为评测消融。Risk 只能由 MLP head
+返回。
 
 验收：
 

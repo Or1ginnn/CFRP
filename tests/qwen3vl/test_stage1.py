@@ -161,6 +161,46 @@ def test_vllm_client_keeps_eight_turn_dialogue_then_starts_a_new_window(monkeypa
     ]
 
 
+def test_vllm_dialogue_rewrites_prior_chunk_to_executed_actions(monkeypatch):
+    payloads = []
+
+    class FakeResponse:
+        def read(self):
+            return b'{"choices": [{"message": {"content": "<progress>hold</progress><subgoal>x</subgoal><action>MOVE_FORWARD, TURN_LEFT, MOVE_FORWARD</action>"}}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(http_request, timeout):
+        payloads.append(json.loads(http_request.data))
+        return FakeResponse()
+
+    monkeypatch.setattr("vlnce_server.qwen3vl.vllm_client.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "vlnce_server.qwen3vl.vllm_client._png_data_uri",
+        lambda image: "data:" + image,
+    )
+    client = VLLMStage1Client("http://127.0.0.1:8000", "cfrp-stage1")
+    client.generate_xml(request())
+
+    client.retain_last_assistant_executed_actions(("MOVE_FORWARD",))
+    client.generate_xml(request())
+
+    assert [message["role"] for message in payloads[1]["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "<action>MOVE_FORWARD</action>" in payloads[1]["messages"][2]["content"]
+    factual_text = payloads[1]["messages"][3]["content"][0]["text"]
+    assert "Executed recent actions (oldest to newest):\nTURN_LEFT" in factual_text
+    assert "MOVE_FORWARD, TURN_LEFT, MOVE_FORWARD" not in json.dumps(payloads[1])
+
+
 class FakeInputs(dict):
     def __init__(self):
         super().__init__(input_ids=[[10, 11, 12]])

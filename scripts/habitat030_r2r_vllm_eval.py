@@ -8,6 +8,7 @@ top-down-map MP4 under ``vis_<rank>/<scene>/<episode>.mp4``.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import multiprocessing as mp
 import shutil
@@ -70,7 +71,133 @@ class EvaluationJob:
     save_frames: bool
     save_video: bool
     save_oracle_trace: bool
+    action_queue_mode: str
+    max_actions_during_inference: int
     rank: int
+
+
+@dataclass
+class _InflightModelRequest:
+    request_id: int
+    observation_step: int
+    future: Future[str]
+    executed_actions: List[str]
+
+
+@dataclass(frozen=True)
+class _AcceptedModelResponse:
+    request_id: int
+    observation_step: int
+    accepted_step: int
+    response_lag_steps: int
+    replaced_actions: Tuple[str, ...]
+    model_actions: Tuple[str, ...]
+    accepted_actions: Tuple[str, ...]
+    reconciled_prefix: Tuple[str, ...]
+
+
+class _RollingQueueRuntime:
+    """Overlap one model request with a bounded executable action prefix."""
+
+    def __init__(
+        self,
+        client: VLLMStage1Client,
+        runner: Stage1EpisodeRunner,
+        max_actions_during_inference: int,
+    ) -> None:
+        self.client = client
+        self.runner = runner
+        self.max_actions_during_inference = max_actions_during_inference
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cfrp-stage1")
+        self.inflight: Optional[_InflightModelRequest] = None
+        self.active_response: Optional[_AcceptedModelResponse] = None
+        self.active_executed_actions: List[str] = []
+        self.request_count = 0
+        self.accepted_count = 0
+        self.last_completed_raw_xml: Optional[str] = None
+
+    def prepare_next_action(
+        self, executed_steps: int
+    ) -> Tuple[_AcceptedModelResponse, bool]:
+        """Ensure one action is executable and report whether a response was refreshed."""
+
+        accepted_now = False
+        while True:
+            if self.inflight is None:
+                if self.runner.pending_actions:
+                    assert self.active_response is not None
+                    return self.active_response, accepted_now
+                self._submit(executed_steps)
+
+            assert self.inflight is not None
+            must_accept = (
+                self.inflight.future.done()
+                or not self.runner.pending_actions
+                or len(self.inflight.executed_actions) >= self.max_actions_during_inference
+            )
+            if not must_accept:
+                assert self.active_response is not None
+                return self.active_response, accepted_now
+
+            inflight = self.inflight
+            raw_xml = inflight.future.result()
+            self.last_completed_raw_xml = raw_xml
+            replacement = self.runner.replace_pending_actions(
+                raw_xml,
+                executed_since_request=tuple(inflight.executed_actions),
+            )
+            self.inflight = None
+            self.accepted_count += 1
+            self.active_response = _AcceptedModelResponse(
+                request_id=inflight.request_id,
+                observation_step=inflight.observation_step,
+                accepted_step=executed_steps,
+                response_lag_steps=executed_steps - inflight.observation_step,
+                replaced_actions=replacement.replaced_actions,
+                model_actions=replacement.model_actions,
+                accepted_actions=replacement.accepted_actions,
+                reconciled_prefix=replacement.reconciled_prefix,
+            )
+            self.active_executed_actions = list(replacement.reconciled_prefix)
+            accepted_now = True
+            if self.runner.pending_actions:
+                return self.active_response, accepted_now
+            # Every predicted action already ran while this response was in
+            # flight. Query the factual latest state instead of replaying one.
+
+    def after_action(self, action: str, executed_steps: int, *, submit_next: bool) -> Optional[int]:
+        """Record actual execution and launch the next factual-state request."""
+
+        self.active_executed_actions.append(action)
+        if self.inflight is not None:
+            self.inflight.executed_actions.append(action)
+            return None
+        if submit_next:
+            return self._submit(executed_steps)
+        return None
+
+    def close(self) -> None:
+        if self.inflight is not None:
+            self.inflight.future.cancel()
+        self.executor.shutdown(wait=False, cancel_futures=True)
+
+    def _submit(self, observation_step: int) -> int:
+        if self.inflight is not None:
+            raise RuntimeError("only one Stage 1 rolling request may be in flight")
+        request_id = self.request_count
+        request = self.runner.model_request()
+        if self.active_response is not None:
+            reconcile = getattr(self.client, "retain_last_assistant_executed_actions", None)
+            if callable(reconcile):
+                reconcile(tuple(self.active_executed_actions))
+        self.inflight = _InflightModelRequest(
+            request_id=request_id,
+            observation_step=observation_step,
+            future=self.executor.submit(self.client.generate_xml, request),
+            executed_actions=[],
+        )
+        self.request_count += 1
+        return request_id
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +229,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-video", action="store_true", help="Write an MP4 for every episode")
     parser.add_argument("--save-oracle-trace", action="store_true")
     parser.add_argument(
+        "--action-queue-mode",
+        choices=("rolling", "drain"),
+        default="rolling",
+        help="Replace pending actions as refreshed responses arrive, or drain each chunk first.",
+    )
+    parser.add_argument(
+        "--max-actions-during-inference",
+        type=int,
+        default=1,
+        help="Maximum old queued actions executed while one rolling request is in flight.",
+    )
+    parser.add_argument(
         "--internnav-layout",
         action="store_true",
         help="Use output-dir itself as the results directory",
@@ -116,6 +255,8 @@ def main() -> int:
         raise ValueError("--episode-ids must contain at least one ID")
     if args.workers < 1 or args.repeat < 1 or args.max_steps < 1 or args.rank < 0:
         raise ValueError("workers, repeat, max-steps, and rank must be valid")
+    if args.max_actions_during_inference < 0:
+        raise ValueError("--max-actions-during-inference must not be negative")
 
     run_dir = Path(args.output_dir)
     if not args.internnav_layout:
@@ -137,7 +278,7 @@ def main() -> int:
             {"repeat_index": repeat_index, "episodes": episodes, "summary": summarize(episodes)}
         )
     report = {
-        "schema": "cfrp.qwen_stage1_vllm_eval.v2",
+        "schema": "cfrp.qwen_stage1_vllm_eval.v3",
         "episode_ids": list(episode_ids),
         "seed": args.seed,
         "repeat_count": args.repeat,
@@ -154,6 +295,8 @@ def main() -> int:
             "save_frames": args.save_frames,
             "save_video": args.save_video,
             "save_oracle_trace": args.save_oracle_trace,
+            "action_queue_mode": args.action_queue_mode,
+            "max_actions_during_inference": args.max_actions_during_inference,
         },
         "repetitions": [
             {"repeat_index": item["repeat_index"], "summary": item["summary"]}
@@ -195,6 +338,8 @@ def _make_job(
         save_frames=args.save_frames,
         save_video=args.save_video,
         save_oracle_trace=args.save_oracle_trace,
+        action_queue_mode=args.action_queue_mode,
+        max_actions_during_inference=args.max_actions_during_inference,
         rank=args.rank,
     )
 
@@ -259,18 +404,34 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
         minimum_distance = _distance(wrapper.metrics())
         end_reason = "max_environment_steps"
         model_decision_index = -1
+        rolling_runtime = (
+            _RollingQueueRuntime(client, runner, job.max_actions_during_inference)
+            if job.action_queue_mode == "rolling"
+            else None
+        )
         for environment_step_index in range(job.max_steps):
-            queried_model = runner.needs_model_decision
+            queried_model = False
             raw_xml = None
-            if queried_model:
-                model_decision_index += 1
+            accepted_response: Optional[_AcceptedModelResponse] = None
+            launched_request_id: Optional[int] = None
             try:
-                if queried_model:
-                    raw_xml = client.generate_xml(runner.model_request())
-                    step = runner.step(raw_xml, turn_index=environment_step_index)
-                else:
+                if rolling_runtime is not None:
+                    accepted_response, queried_model = rolling_runtime.prepare_next_action(
+                        environment_step_index
+                    )
+                    model_decision_index = accepted_response.request_id
                     step = runner.step_pending(turn_index=environment_step_index)
+                else:
+                    queried_model = runner.needs_model_decision
+                    if queried_model:
+                        model_decision_index += 1
+                        raw_xml = client.generate_xml(runner.model_request())
+                        step = runner.step(raw_xml, turn_index=environment_step_index)
+                    else:
+                        step = runner.step_pending(turn_index=environment_step_index)
             except CFRPProtocolError as exc:
+                if rolling_runtime is not None:
+                    raw_xml = rolling_runtime.last_completed_raw_xml
                 end_reason = "invalid_xml_or_action"
                 steps.append(
                     {
@@ -284,6 +445,8 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 )
                 break
             except Exception as exc:
+                if rolling_runtime is not None:
+                    raw_xml = rolling_runtime.last_completed_raw_xml
                 end_reason = "model_error"
                 steps.append(
                     {
@@ -297,6 +460,15 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                     }
                 )
                 break
+            terminal_step = step.action == "STOP" or step.episode_over
+            if rolling_runtime is not None:
+                launched_request_id = rolling_runtime.after_action(
+                    step.action,
+                    environment_step_index + 1,
+                    submit_next=(
+                        not terminal_step and environment_step_index + 1 < job.max_steps
+                    ),
+                )
             minimum_distance = _minimum(minimum_distance, _distance(step.metrics))
             step_record = {
                 # Kept for artifact compatibility; one turn is one executed
@@ -321,6 +493,25 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 "metrics": _metrics_to_dict(step.metrics),
                 "agent_pose": _pose_to_dict(wrapper.agent_pose()),
             }
+            if accepted_response is not None:
+                step_record["rolling_queue"] = {
+                    "mode": job.action_queue_mode,
+                    "request_id": accepted_response.request_id,
+                    "request_observation_step": accepted_response.observation_step,
+                    "response_accepted_step": accepted_response.accepted_step,
+                    "response_lag_steps": accepted_response.response_lag_steps,
+                    "response_accepted_before_action": queried_model,
+                    "replaced_actions": list(accepted_response.replaced_actions),
+                    "model_actions": list(accepted_response.model_actions),
+                    "accepted_actions": list(accepted_response.accepted_actions),
+                    "reconciled_prefix": list(accepted_response.reconciled_prefix),
+                    "launched_request_after_action": launched_request_id,
+                    "inflight_request_after_action": (
+                        rolling_runtime.inflight.request_id
+                        if rolling_runtime is not None and rolling_runtime.inflight is not None
+                        else None
+                    ),
+                }
             if job.save_oracle_trace:
                 step_record["oracle_only"] = _oracle_to_dict(wrapper.privileged_state())
             steps.append(step_record)
@@ -336,8 +527,9 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
                 video_frames.append(
                     _visualization_frame(runner.history.visual_history[-1].rgb, wrapper)
                 )
-            if step.episode_over or step.action == "STOP":
-                end_reason = "stop"
+            termination_reason = _stage1_termination_reason(step)
+            if termination_reason is not None:
+                end_reason = termination_reason
                 break
 
         final_metrics = wrapper.metrics()
@@ -348,7 +540,17 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
             "instruction": record.instruction_text,
             "end_reason": end_reason,
             "environment_steps": environment_steps,
-            "model_decisions": model_decision_index + 1,
+            "model_decisions": (
+                rolling_runtime.accepted_count
+                if rolling_runtime is not None
+                else model_decision_index + 1
+            ),
+            "model_requests": (
+                rolling_runtime.request_count
+                if rolling_runtime is not None
+                else model_decision_index + 1
+            ),
+            "action_queue_mode": job.action_queue_mode,
             "steps": steps,
             "final_metrics": _metrics_to_dict(final_metrics),
             "navigation_error": final_metrics.distance_to_goal,
@@ -373,6 +575,8 @@ def _run_job(job: EvaluationJob) -> Tuple[int, str, Dict[str, Any]]:
             shutil.rmtree(episode_dir, ignore_errors=True)
         return job.repeat_index, job.episode_id, result
     finally:
+        if "rolling_runtime" in locals() and rolling_runtime is not None:
+            rolling_runtime.close()
         wrapper.close()
 
 
@@ -384,6 +588,14 @@ def _initial_frame_history(
     return SlowFastVisualHistory[str].create(
         context_window=DEFAULT_VISUAL_CONTEXT_WINDOW
     ).reset(_save_current_frame(runner.history.visual_history[-1].rgb, frames_dir, 0))
+
+
+def _stage1_termination_reason(step: Any) -> Optional[str]:
+    if step.action == "STOP":
+        return "stop"
+    if step.episode_over:
+        return "environment_episode_over"
+    return None
 
 
 def _visualization_frame(rgb: Any, wrapper: Habitat030NavigationEnvironment) -> Any:

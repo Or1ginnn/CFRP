@@ -20,6 +20,11 @@ from vlnce_server.habitat030.r2r_environment import (
 from vlnce_server.qwen3vl.vision import qwen3vl_image_size
 from vlnce_server.qwen3vl.vision import qwen3vl_processor_kwargs
 from scripts.convert_stage1_warmup_to_action_sft import recover_expert_episodes
+from scripts.preflight_qwen3vl_stage1_sft import (
+    _model_forward_sample,
+    _validate_action_images,
+)
+from scripts.habitat030_collect_janus_action_sft import save_model_frame
 
 
 def test_janus_frame_indices_keep_current_frame_last() -> None:
@@ -72,6 +77,43 @@ def test_loader_checks_local_images_when_requested(tmp_path: Path) -> None:
     source.write_text(json.dumps(example) + "\n", encoding="utf-8")
     assert load_action_sft_jsonl(source) == [example]
     validate_action_sft_example(example, check_images=True)
+
+
+def test_action_preflight_decodes_compact_jpegs(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    uri = save_model_frame(np.zeros((480, 640, 3), dtype=np.uint8), tmp_path, 0)
+    example = make_action_sft_example(
+        episode_id="1",
+        step_index=0,
+        instruction="Stop here.",
+        frame_uris=(uri,),
+        expert_action="STOP",
+    )
+
+    assert _validate_action_images([example]) == {
+        "unique_images_checked": 1,
+        "width": 384,
+        "height": 288,
+    }
+
+
+def test_model_forward_sample_prefers_nine_frame_action_context():
+    one_frame = make_action_sft_example(
+        episode_id="1",
+        step_index=0,
+        instruction="Move.",
+        frame_uris=("file:///tmp/0.jpg",),
+        expert_action="MOVE_FORWARD",
+    )
+    nine_frame = make_action_sft_example(
+        episode_id="2",
+        step_index=8,
+        instruction="Move.",
+        frame_uris=tuple(f"file:///tmp/{index}.jpg" for index in range(9)),
+        expert_action="MOVE_FORWARD",
+    )
+
+    assert _model_forward_sample([one_frame, nine_frame], 1) == [nine_frame]
 
 
 def test_recover_expert_episode_expands_chunks_to_primitive_steps(tmp_path: Path) -> None:

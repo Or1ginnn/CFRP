@@ -35,6 +35,7 @@ from vlnce_server.qwen3vl.loss_weights import (
     DEFAULT_ACTION_LOSS_WEIGHT,
     DEFAULT_PROGRESS_LOSS_WEIGHT,
     DEFAULT_SUBGOAL_LOSS_WEIGHT,
+    locate_target_action_token_mask,
     locate_target_token_weights,
 )
 
@@ -365,7 +366,7 @@ def _validate_training_checkpoint(path: Path, args: argparse.Namespace) -> None:
 
 def _supervised_inputs(
     processor: Any, example: dict[str, Any], device: Any, args: argparse.Namespace
-) -> tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any]:
     """Mask user/system tokens and supervise every assistant XML response."""
 
     messages = _messages_with_processor_image_paths(example["messages"])
@@ -377,6 +378,7 @@ def _supervised_inputs(
     labels = full_ids.new_full(full_ids.shape, -100)
     token_weights = full_ids.new_ones(full_ids.shape, dtype=getattr(full_ids, "dtype", None)).float()
     token_weights.zero_()
+    action_token_mask = labels.new_zeros(labels.shape).bool()
 
     for target in example["targets"]:
         message_index = int(target["message_index"])
@@ -425,9 +427,26 @@ def _supervised_inputs(
         token_weights[0, start : start + len(target_region_weights)] = token_weights.new_tensor(
             target_region_weights
         )
+        action_start, target_action_mask = locate_target_action_token_mask(
+            target_xml,
+            target_suffix,
+            processor.tokenizer,
+        )
+        if action_start != target_start:
+            raise RuntimeError("target action mask and target loss weights disagree on XML location")
+        action_token_mask[
+            0, start : start + len(target_action_mask)
+        ] = action_token_mask.new_tensor(target_action_mask)
     if not bool(labels.ne(-100).any().item()):
         raise RuntimeError("multi-turn SFT example contains no supervised assistant tokens")
-    return full.to(device), labels.to(device), token_weights.to(device)
+    if not bool(action_token_mask.any().item()):
+        raise RuntimeError("multi-turn SFT example contains no supervised action tokens")
+    return (
+        full.to(device),
+        labels.to(device),
+        token_weights.to(device),
+        action_token_mask.to(device),
+    )
 
 
 def _supervised_batch(
@@ -435,14 +454,16 @@ def _supervised_batch(
     examples: list[dict[str, Any]],
     device: Any,
     args: argparse.Namespace,
-) -> tuple[dict[str, Any], Any, Any]:
+) -> tuple[dict[str, Any], Any, Any, Any]:
     """Right-pad text tensors and concatenate variable-count Qwen image patches."""
 
     if not examples:
         raise ValueError("supervised batch must not be empty")
     if len(examples) == 1:
-        inputs, labels, weights = _supervised_inputs(processor, examples[0], device, args)
-        return dict(inputs), labels, weights
+        inputs, labels, weights, action_mask = _supervised_inputs(
+            processor, examples[0], device, args
+        )
+        return dict(inputs), labels, weights, action_mask
 
     import torch
 
@@ -451,6 +472,7 @@ def _supervised_batch(
     input_rows = [dict(item[0]) for item in prepared]
     labels = _pad_sequence_rows([item[1] for item in prepared], -100)
     token_weights = _pad_sequence_rows([item[2] for item in prepared], 0.0)
+    action_token_mask = _pad_sequence_rows([item[3] for item in prepared], 0)
     batch: dict[str, Any] = {
         "input_ids": _pad_sequence_rows(
             [item["input_ids"] for item in input_rows],
@@ -479,6 +501,7 @@ def _supervised_batch(
         {key: value.to(device) for key, value in batch.items()},
         labels.to(device),
         token_weights.to(device),
+        action_token_mask.to(device),
     )
 
 
@@ -523,6 +546,42 @@ def _weighted_causal_lm_loss(logits: Any, labels: Any, token_weights: Any) -> An
     return (per_token * effective_weights).sum() / effective_weights.sum().clamp_min(1.0)
 
 
+def _action_accuracy_counts(logits: Any, labels: Any, action_token_mask: Any) -> Any:
+    """Return token-correct, token-total, exact-example, and example-total counts."""
+
+    shifted_predictions = logits[:, :-1, :].detach().argmax(dim=-1)
+    shifted_labels = labels[:, 1:]
+    shifted_action_mask = action_token_mask[:, 1:].bool() & shifted_labels.ne(-100)
+    token_matches = shifted_predictions.eq(shifted_labels)
+    rows_with_action = shifted_action_mask.any(dim=1)
+    exact_rows = (token_matches | ~shifted_action_mask).all(dim=1) & rows_with_action
+    return labels.new_tensor(
+        (
+            (token_matches & shifted_action_mask).sum().item(),
+            shifted_action_mask.sum().item(),
+            exact_rows.sum().item(),
+            rows_with_action.sum().item(),
+        )
+    ).float()
+
+
+def _action_accuracy_metrics(counts: Any, runtime: "_Runtime") -> dict[str, float]:
+    totals = counts.detach().clone()
+    if runtime.distributed:
+        import torch
+
+        torch.distributed.all_reduce(totals)
+    token_correct, token_total, exact_examples, total_examples = totals.tolist()
+    return {
+        "action_token_accuracy": (
+            token_correct / token_total if token_total else float("nan")
+        ),
+        "action_exact_match": (
+            exact_examples / total_examples if total_examples else float("nan")
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class _Runtime:
     rank: int
@@ -551,6 +610,13 @@ class _TrainResult:
     optimizer_steps: int
     validation_loss: float
     interrupted: bool = False
+
+
+@dataclass(frozen=True)
+class _EvaluationResult:
+    loss: float
+    action_token_accuracy: float
+    action_exact_match: float
 
 
 @dataclass
@@ -739,6 +805,7 @@ def _train(
     validation_step_set = set(validation_steps)
     checkpoint_step_set = set(checkpoint_steps)
     accumulated_group_loss = None
+    accumulated_action_counts = None
     for epoch in range(args.epochs):
         if epoch < resume_state.epoch:
             continue
@@ -767,16 +834,23 @@ def _train(
                 model.no_sync() if runtime.distributed and not should_step else contextlib.nullcontext()
             )
             with sync_context:
-                inputs, labels, token_weights = _supervised_batch(
+                inputs, labels, token_weights, action_token_mask = _supervised_batch(
                     processor, example_batch, runtime.device, args
                 )
-                loss = _weighted_causal_lm_loss(model(**inputs).logits, labels, token_weights)
+                logits = model(**inputs).logits
+                loss = _weighted_causal_lm_loss(logits, labels, token_weights)
                 (loss / divisor).backward()
             detached_loss = loss.detach()
             accumulated_group_loss = (
                 detached_loss
                 if accumulated_group_loss is None
                 else accumulated_group_loss + detached_loss
+            )
+            action_counts = _action_accuracy_counts(logits, labels, action_token_mask)
+            accumulated_action_counts = (
+                action_counts
+                if accumulated_action_counts is None
+                else accumulated_action_counts + action_counts
             )
             total_micro_steps += 1
             if not should_step:
@@ -787,12 +861,20 @@ def _train(
             optimizer_steps += 1
             if accumulated_group_loss is None:
                 raise RuntimeError("gradient accumulation group has no recorded losses")
+            if accumulated_action_counts is None:
+                raise RuntimeError("gradient accumulation group has no action accuracy counts")
             mean_loss = _mean_across_ranks(accumulated_group_loss / divisor, runtime)
+            action_metrics = _action_accuracy_metrics(accumulated_action_counts, runtime)
             accumulated_group_loss = None
+            accumulated_action_counts = None
             if wandb_run is not None:
                 wandb_run.log(
                     {
                         "train/loss": mean_loss,
+                        "train/action_token_accuracy": action_metrics[
+                            "action_token_accuracy"
+                        ],
+                        "train/action_exact_match": action_metrics["action_exact_match"],
                         "train/learning_rate": scheduler.get_last_lr()[0],
                         "train/epoch": epoch + (micro_index + 1) / len(epoch_batches),
                         "train/examples_per_optimizer_step": (
@@ -829,12 +911,20 @@ def _train(
                     ),
                 )
             if optimizer_steps in validation_step_set:
-                validation_loss = _evaluate(
+                evaluation = _evaluate(
                     model, processor, validation_examples, args, runtime
                 )
+                validation_loss = evaluation.loss
                 if wandb_run is not None and validation_loss == validation_loss:
                     wandb_run.log(
-                        {"validation/loss": validation_loss}, step=optimizer_steps
+                        {
+                            "validation/loss": validation_loss,
+                            "validation/action_token_accuracy": (
+                                evaluation.action_token_accuracy
+                            ),
+                            "validation/action_exact_match": evaluation.action_exact_match,
+                        },
+                        step=optimizer_steps,
                     )
             if stop_controller is not None and _distributed_stop_requested(
                 stop_controller, runtime
@@ -864,16 +954,24 @@ def _train(
                     total_micro_steps, optimizer_steps, validation_loss, interrupted=True
                 )
         if not validation_step_set:
-            validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
+            evaluation = _evaluate(model, processor, validation_examples, args, runtime)
+            validation_loss = evaluation.loss
             if wandb_run is not None and validation_loss == validation_loss:
                 wandb_run.log(
-                    {"validation/loss": validation_loss, "train/epoch": epoch + 1},
+                    {
+                        "validation/loss": validation_loss,
+                        "validation/action_token_accuracy": evaluation.action_token_accuracy,
+                        "validation/action_exact_match": evaluation.action_exact_match,
+                        "train/epoch": epoch + 1,
+                    },
                     step=optimizer_steps,
                 )
         if remaining_micro_steps is not None:
             remaining_micro_steps -= max_examples
     if validation_step_set and optimizer_steps not in validation_step_set:
-        validation_loss = _evaluate(model, processor, validation_examples, args, runtime)
+        validation_loss = _evaluate(
+            model, processor, validation_examples, args, runtime
+        ).loss
     return _TrainResult(total_micro_steps, optimizer_steps, validation_loss)
 
 
@@ -883,30 +981,39 @@ def _evaluate(
     examples: list[dict[str, Any]],
     args: argparse.Namespace,
     runtime: _Runtime,
-) -> float:
+) -> _EvaluationResult:
     if not examples and not runtime.distributed:
-        return float("nan")
+        return _EvaluationResult(float("nan"), float("nan"), float("nan"))
     import torch
 
     model.eval()
     evaluation_model = _unwrap_distributed_model(model)
     loss_sum = torch.zeros((), device=runtime.device, dtype=torch.float32)
     count = torch.zeros((), device=runtime.device, dtype=torch.float32)
+    action_counts = torch.zeros(4, device=runtime.device, dtype=torch.float32)
     with torch.no_grad():
         for example_batch in _iter_batches(examples, args.per_device_batch_size):
-            inputs, labels, token_weights = _supervised_batch(
+            inputs, labels, token_weights, action_token_mask = _supervised_batch(
                 processor, example_batch, runtime.device, args
             )
             batch_size = len(example_batch)
+            logits = evaluation_model(**inputs).logits
             loss_sum += batch_size * _weighted_causal_lm_loss(
-                evaluation_model(**inputs).logits, labels, token_weights
+                logits, labels, token_weights
             ).float()
+            action_counts += _action_accuracy_counts(logits, labels, action_token_mask)
             count += batch_size
     if runtime.distributed:
         torch.distributed.all_reduce(loss_sum)
         torch.distributed.all_reduce(count)
     model.train()
-    return float((loss_sum / count.clamp_min(1)).item()) if count.item() else float("nan")
+    action_metrics = _action_accuracy_metrics(action_counts, runtime)
+    loss = float((loss_sum / count.clamp_min(1)).item()) if count.item() else float("nan")
+    return _EvaluationResult(
+        loss,
+        action_metrics["action_token_accuracy"],
+        action_metrics["action_exact_match"],
+    )
 
 
 def _unwrap_distributed_model(model: Any) -> Any:

@@ -94,6 +94,39 @@ def locate_target_token_weights(
     )
 
 
+def locate_target_action_token_mask(
+    target_xml: str,
+    target_token_ids: Sequence[int],
+    tokenizer: Callable[..., object],
+) -> tuple[int, list[bool]]:
+    """Locate target XML and mark only token pieces overlapping action payloads."""
+
+    encoded = tokenizer(target_xml, add_special_tokens=False, return_offsets_mapping=True)
+    token_ids = list(encoded["input_ids"])
+    offsets = [tuple(item) for item in encoded["offset_mapping"]]
+    if len(token_ids) != len(offsets):
+        raise RuntimeError("tokenizer returned mismatched target ids and offsets")
+    start = _find_subsequence(list(target_token_ids), token_ids)
+    if start is None:
+        raise RuntimeError("Qwen chat template suffix does not contain the terminal target XML")
+    action_regions = [
+        (match.start(1), match.end(1))
+        for match in re.finditer(r"<action>(.*?)</action>", target_xml, flags=re.DOTALL)
+    ]
+    if not action_regions:
+        raise RuntimeError("supervised target XML does not contain an action payload")
+    mask = [
+        any(
+            token_start < action_end and token_end > action_start
+            for action_start, action_end in action_regions
+        )
+        for token_start, token_end in offsets
+    ]
+    if not any(mask):
+        raise RuntimeError("tokenizer produced no token overlapping the action payload")
+    return start, mask
+
+
 def _payload_regions(
     target_xml: str,
     action_weight: float,

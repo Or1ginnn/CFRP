@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from scripts.preflight_qwen3vl_stage1_sft import _processor_sample
 from scripts.train_qwen3vl_stage1_sft import (
     _ResumeState,
+    _Runtime,
+    _action_accuracy_counts,
+    _action_accuracy_metrics,
     _equal_train_shard,
     _fixed_validation_examples,
     _iter_batches,
@@ -132,6 +135,40 @@ def test_visual_sft_requires_vit_inputs():
 
     with pytest.raises(RuntimeError, match="missing visual tensors"):
         _require_visual_tensors({"input_ids": object()}, "example")
+
+
+def test_action_accuracy_uses_only_expert_action_tokens():
+    torch = pytest.importorskip("torch")
+    labels = torch.tensor(
+        [
+            [-100, 1, 2, 3, 4],
+            [-100, 1, 2, 3, 4],
+        ]
+    )
+    action_mask = torch.tensor(
+        [
+            [False, False, True, True, False],
+            [False, False, True, True, False],
+        ]
+    )
+    logits = torch.zeros((2, 5, 8))
+    for row in range(2):
+        for target_position in range(1, 5):
+            logits[row, target_position - 1, labels[row, target_position]] = 10
+    logits[1, 1, 2] = 0
+    logits[1, 1, 7] = 10
+
+    counts = _action_accuracy_counts(logits, labels, action_mask)
+    metrics = _action_accuracy_metrics(
+        counts,
+        _Runtime(rank=0, local_rank=0, world_size=1, distributed=False, device="cpu"),
+    )
+
+    assert counts.tolist() == [3.0, 4.0, 1.0, 2.0]
+    assert metrics == {
+        "action_token_accuracy": 0.75,
+        "action_exact_match": 0.5,
+    }
 
 
 def test_processor_preflight_sample_is_stable_and_spans_episodes():

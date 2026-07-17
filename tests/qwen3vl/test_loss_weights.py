@@ -2,6 +2,7 @@ from vlnce_server.qwen3vl.loss_weights import (
     DEFAULT_ACTION_LOSS_WEIGHT,
     DEFAULT_PROGRESS_LOSS_WEIGHT,
     DEFAULT_SUBGOAL_LOSS_WEIGHT,
+    locate_target_action_token_mask,
     locate_target_token_weights,
     target_xml_region_weights,
 )
@@ -38,6 +39,19 @@ def test_locate_target_weights_preserves_template_prefix_and_suffix():
 
     assert start == 1
     assert weights[TARGET.index("MOVE_FORWARD")] == DEFAULT_ACTION_LOSS_WEIGHT
+
+
+def test_action_token_mask_excludes_xml_tags_and_other_payloads():
+    target_ids = [999] + [ord(char) for char in TARGET] + [998]
+
+    start, mask = locate_target_action_token_mask(TARGET, target_ids, _char_tokenizer)
+
+    assert start == 1
+    assert mask[TARGET.index("MOVE_FORWARD")]
+    assert mask[TARGET.index("TURN_LEFT")]
+    assert not mask[TARGET.index("hold")]
+    assert not mask[TARGET.index("<action>")]
+    assert not mask[TARGET.index("</action>")]
 
 
 def test_target_weights_reject_non_positive_values():

@@ -53,8 +53,14 @@ legacy manifest.
 - Adaptation: LoRA on language attention projections; visual tower frozen.
 - Loss: assistant-only causal cross entropy over one `<action>` response. All
   supervised response tokens use ordinary weight 1 by default.
-- Logging: each W&B `train/loss` value is the mean over the complete gradient
-  accumulation group and all DDP ranks.
+- Logging: each W&B training metric is aggregated over the complete gradient
+  accumulation group and all DDP ranks. In addition to `train/loss`, the run
+  records `train/action_token_accuracy` and `train/action_exact_match` against
+  the expert action payload. Validation records the corresponding
+  `validation/*` metrics over the complete fixed validation subset.
+- Metric scope: action accuracy is teacher-forced and reuses the training
+  forward logits; XML tags and other assistant fields do not enter it. It is a
+  fast imitation diagnostic, not closed-loop SR or SPL.
 - Split: by episode, never by individual decisions.
 - Evaluation: execute exactly one predicted primitive action, observe the next
   RGB frame, and request the next action.
